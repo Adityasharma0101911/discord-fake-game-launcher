@@ -242,6 +242,9 @@ struct Presence {
     large_text: String,
     small_image: String,
     small_text: String,
+    /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`.
+    timer: String,
+    timer_minutes: u32,
 }
 
 /// A library game as sent to the UI, with the key every other command takes.
@@ -523,7 +526,8 @@ fn fake_exe_args(game: &MyGame) -> Vec<String> {
 
 /// The activity fields for a custom status. Discord rejects the whole status if a field is out of its limits
 /// (texts 2–128 characters, images 1–300), so those fields are left out instead.
-fn presence_activity(p: &Presence) -> Value {
+/// `now` is when the status is written: on save, and again at each launch.
+fn presence_activity(p: &Presence, now: u64) -> Value {
     let fit = |s: &str, min: usize, max: usize| {
         let s = s.trim();
         (min..=max).contains(&s.chars().count()).then(|| json!(s))
@@ -536,6 +540,15 @@ fn presence_activity(p: &Presence) -> Value {
         ("details", fit(&p.details, 2, 128)),
         ("state", fit(&p.state, 2, 128)),
         ("party", (p.party_max > 0 && p.party_size <= p.party_max).then(|| json!({ "size": [p.party_size, p.party_max] }))),
+        // Without timestamps the fake exe adds the launch time.
+        (
+            "timestamps",
+            match p.timer.as_str() {
+                "reset" => Some(json!({ "start": now })),
+                "left" if p.timer_minutes > 0 => Some(json!({ "end": now + u64::from(p.timer_minutes) * 60_000 })),
+                _ => None,
+            },
+        ),
     ]);
     let assets = pick(vec![
         ("large_image", fit(&p.large_image, 1, 300)),
@@ -557,7 +570,7 @@ fn write_presence_file(app: &AppHandle, game: &MyGame) -> Result<(), String> {
     match &game.presence {
         Some(p) => {
             fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
-            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p))).map_err(err)
+            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p, now_ms()))).map_err(err)
         }
         None => match fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
@@ -1336,11 +1349,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            presence_activity(&p),
+            presence_activity(&p, 1000),
             json!({ "type": 5, "details": "Competitive • Ascent", "party": { "size": [2, 5] }, "assets": { "large_image": "https://example.com/ascent.png" } })
         );
-        let odd = Presence { activity_type: 1, party_size: 6, party_max: 5, ..Default::default() };
-        assert_eq!(presence_activity(&odd), json!({}));
+        let odd = Presence { activity_type: 1, party_size: 6, party_max: 5, timer: "left".into(), ..Default::default() };
+        assert_eq!(presence_activity(&odd, 1000), json!({}));
+        let reset = Presence { timer: "reset".into(), ..Default::default() };
+        assert_eq!(presence_activity(&reset, 1000), json!({ "timestamps": { "start": 1000 } }));
+        let left = Presence { timer: "left".into(), timer_minutes: 2, ..Default::default() };
+        assert_eq!(presence_activity(&left, 1000), json!({ "timestamps": { "end": 121_000 } }));
     }
 
     #[test]

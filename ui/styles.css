@@ -298,6 +298,8 @@ button { cursor: pointer; }
 .presence h2 { margin: 0 0 4px; font-size: 16px; color: var(--text-strong); }
 .presence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 16px; }
 .presence-grid label { display: grid; gap: 4px; color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.stages { display: grid; gap: 6px; margin-top: 14px; }
+.stage-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .party { display: flex; align-items: center; gap: 8px; }
 .party .input { width: 80px; }
 

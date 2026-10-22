@@ -197,11 +197,14 @@ try {
 
   // Custom status: saved to the library and written next to the fake exe, which re-reads it while running.
   const presenceFile = path.join(process.env.APPDATA, 'com.endo.discordgamespoofer', 'games', TEST_GAME.id, 'e2e', `${FAKE}.presence`);
-  const saved = await run(call('set_presence', { key: KEY, presence: { activityType: 5, details: 'Competitive', state: 'x', partySize: 2, partyMax: 5 } }));
+  const presence = { activityType: 5, details: 'Competitive', state: 'x', partySize: 2, partyMax: 5, timer: 'left', timerMinutes: 5 };
+  const saved = await run(call('set_presence', { key: KEY, presence }));
   assert.equal(saved.presence.details, 'Competitive');
   const [fileId, activity] = fs.readFileSync(presenceFile, 'utf8').split('\n');
   assert.equal(fileId, TEST_GAME.id);
-  assert.deepEqual(JSON.parse(activity), { type: 5, details: 'Competitive', party: { size: [2, 5] } }, 'too-short state left out');
+  const { timestamps, ...rest } = JSON.parse(activity);
+  assert.ok(Math.abs(timestamps.end - (Date.now() + 5 * 60_000)) < 10_000, 'countdown ends in 5 minutes');
+  assert.deepEqual(rest, { type: 5, details: 'Competitive', party: { size: [2, 5] } }, 'too-short state left out');
   assert.equal((await run(call('set_presence', { key: KEY, presence: null }))).presence, undefined);
   assert.ok(!fs.existsSync(presenceFile), 'cleared status removes the file');
   console.log('custom Discord status file: ok');

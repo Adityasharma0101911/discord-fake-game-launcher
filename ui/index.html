@@ -99,6 +99,10 @@
         <form id="presenceForm" class="presence" aria-labelledby="presenceTitle">
           <h2 id="presenceTitle">Discord status</h2>
           <p class="subtle small-text">Extra lines under the game on your Discord profile, like the mode, map and score. A running game updates within a few seconds.</p>
+          <div class="stages">
+            <span class="subtle small-text">Quick switch (saves right away):</span>
+            <div id="presenceStages" class="stage-buttons"></div>
+          </div>
           <div class="presence-grid">
             <label>Shown as
               <select name="activityType" class="input">
@@ -111,6 +115,14 @@
             <label>Party
               <span class="party"><input name="partySize" class="input" type="number" min="0" max="999" aria-label="Players in party"> of <input name="partyMax" class="input" type="number" min="0" max="999" aria-label="Party size"></span>
             </label>
+            <label>Timer
+              <select name="timer" class="input">
+                <option value="">Time since launch</option>
+                <option value="reset">Time since this status</option>
+                <option value="left">Time left</option>
+              </select>
+            </label>
+            <label>Minutes left (for “Time left”) <input name="timerMinutes" class="input" type="number" min="1" max="1440"></label>
             <label>Top line <input name="details" class="input" minlength="2" maxlength="128"></label>
             <label>Second line <input name="state" class="input" minlength="2" maxlength="128"></label>
             <label>Big image link <input name="largeImage" class="input" type="url" pattern="https?://.+" maxlength="300" placeholder="https://… (optional)"></label>
@@ -120,7 +132,6 @@
           </div>
           <div class="secondary-actions">
             <button class="btn primary">Save status</button>
-            <button type="button" id="presenceExampleBtn" class="btn">Fill in an example</button>
             <button type="button" id="presenceClearBtn" class="btn">Clear</button>
           </div>
         </form>

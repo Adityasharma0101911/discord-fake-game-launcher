@@ -236,40 +236,99 @@ function renderGame() {
     form.dataset.key = game.key;
     fillPresence(game.presence);
     const example = presenceExample(game);
-    for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = example[input.name] ?? '';
+    const last = { ...example.base, ...example.stages.at(-1)[1] };
+    for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = last[input.name] ?? '';
+    $('presenceStages').replaceChildren(...example.stages.map(([label, stage]) => {
+      const button = el('button', 'btn small', label);
+      button.type = 'button';
+      button.onclick = () => useStage({ ...example.base, ...stage });
+      return button;
+    }));
   }
 }
 
 // ---- Custom Discord status ----
 
-// "Fill in an example" uses the first one whose `match` is in the game's name.
+// Stages of a session for the first entry whose `match` is in the game's name. Each stage is laid over `base`.
+// "reset" timers restart at that stage, like real games do when a match starts.
 const PRESENCE_EXAMPLES = [
-  { match: 'valorant', activityType: 5, details: 'Competitive • Ascent', state: 'In Match • 12 - 3', partySize: 5, partyMax: 5, largeText: 'Ascent', smallText: 'Jett • Radiant' },
-  { match: 'league of legends', details: 'Summoner’s Rift (Ranked Solo/Duo)', state: 'In Game • 21/0/7 Yasuo', partySize: 2, partyMax: 5, largeText: 'Yasuo', smallText: 'Challenger I' },
-  { match: 'counter-strike', activityType: 5, details: 'Premier • Mirage', state: 'Score 12 : 4', partySize: 5, partyMax: 5, smallText: 'Rating 32,000' },
-  { match: 'fortnite', details: 'Battle Royale • Squads', state: '2 players left • 17 eliminations', partySize: 4, partyMax: 4 },
-  { match: 'rocket league', activityType: 5, details: 'Ranked Doubles • Supersonic Legend', state: 'Score 6 - 0 • 0:12 left', partySize: 2, partyMax: 2 },
-  { match: 'overwatch', details: 'Competitive Push • Colosseo', state: 'Winning 1 - 0 • Kiriko', partySize: 5, partyMax: 5, smallText: 'Champion 1' },
-  { match: 'apex', details: 'Ranked • Apex Predator', state: 'Final circle • 20 kills', partySize: 3, partyMax: 3 },
-  { match: 'minecraft', details: 'Hardcore • Day 4,096', state: 'Fighting the Ender Dragon' },
-  { match: 'rise of kingdoms', details: 'Kingdom 1234 • Power 980M', state: 'Winning the KvK', smallText: 'Governor' },
-  { match: '', details: 'Ranked match', state: 'Winning 3 - 0', partySize: 1, partyMax: 4 }
+  { match: 'valorant', base: { partySize: 5, partyMax: 5, smallText: 'Jett • Radiant' }, stages: [
+    ['In lobby', { details: 'Competitive', state: 'In Lobby', partySize: 2 }],
+    ['In queue', { details: 'Competitive', state: 'In Queue' }],
+    ['Agent select', { details: 'Competitive • Ascent', state: 'Agent Select', largeText: 'Ascent' }],
+    ['In match', { activityType: 5, details: 'Competitive • Ascent', state: 'In Match • 12 - 3', largeText: 'Ascent', timer: 'reset' }]
+  ] },
+  { match: 'league of legends', base: { details: 'Ranked Solo/Duo', partySize: 2, partyMax: 2, smallText: 'Challenger I' }, stages: [
+    ['In lobby', { state: 'In Lobby' }],
+    ['In queue', { state: 'In Queue' }],
+    ['Champion select', { details: 'Summoner’s Rift (Ranked Solo/Duo)', state: 'Champion Select' }],
+    ['In game', { details: 'Summoner’s Rift (Ranked Solo/Duo)', state: 'In Game • 21/0/7 Yasuo', largeText: 'Yasuo', timer: 'reset' }]
+  ] },
+  { match: 'counter-strike', base: { partySize: 5, partyMax: 5, smallText: 'Rating 32,000' }, stages: [
+    ['In lobby', { details: 'Premier', state: 'In Lobby' }],
+    ['In queue', { details: 'Premier', state: 'Searching for a match' }],
+    ['Warmup', { details: 'Premier • Mirage', state: 'Warmup' }],
+    ['In match', { activityType: 5, details: 'Premier • Mirage', state: 'Score 12 : 4', timer: 'reset' }]
+  ] },
+  { match: 'fortnite', base: { details: 'Battle Royale • Squads', partySize: 4, partyMax: 4 }, stages: [
+    ['In lobby', { state: 'In Lobby' }],
+    ['In queue', { state: 'Matchmaking' }],
+    ['In match', { state: '12 players left • 9 eliminations', timer: 'reset' }],
+    ['Victory', { state: 'Victory Royale! • 17 eliminations' }]
+  ] },
+  { match: 'rocket league', base: { details: 'Ranked Doubles • Supersonic Legend', partySize: 2, partyMax: 2 }, stages: [
+    ['In lobby', { state: 'In Main Menu' }],
+    ['In queue', { state: 'Searching' }],
+    ['In match', { activityType: 5, state: 'Score 3 - 0', timer: 'left', timerMinutes: 5 }],
+    ['Overtime', { activityType: 5, state: 'Overtime • Score 3 - 3', timer: 'reset' }]
+  ] },
+  { match: 'overwatch', base: { partySize: 5, partyMax: 5, smallText: 'Champion 1' }, stages: [
+    ['In lobby', { details: 'Competitive', state: 'In Lobby' }],
+    ['In queue', { details: 'Competitive', state: 'In Queue' }],
+    ['In match', { details: 'Competitive Push • Colosseo', state: 'Winning 1 - 0 • Kiriko', timer: 'reset' }]
+  ] },
+  { match: 'apex', base: { details: 'Ranked • Apex Predator', partySize: 3, partyMax: 3 }, stages: [
+    ['In lobby', { state: 'In Lobby' }],
+    ['In queue', { state: 'Matchmaking' }],
+    ['In match', { state: 'Final circle • 20 kills', timer: 'reset' }],
+    ['Champion', { state: 'Champion! • 20 kills' }]
+  ] },
+  { match: 'minecraft', base: {}, stages: [
+    ['Main menu', { details: 'Main Menu' }],
+    ['Survival', { details: 'Survival • Day 4,096', state: 'Mining diamonds' }],
+    ['Ender Dragon', { details: 'Hardcore • Day 4,096', state: 'Fighting the Ender Dragon', timer: 'reset' }]
+  ] },
+  { match: 'rise of kingdoms', base: { details: 'Kingdom 1234 • Power 980M', smallText: 'Governor' }, stages: [
+    ['In city', { state: 'Upgrading City Hall 25' }],
+    ['Rallying', { state: 'Leading a rally on a Pass' }],
+    ['KvK', { state: 'Winning the KvK', timer: 'reset' }]
+  ] },
+  { match: '', base: { details: 'Ranked match', partySize: 1, partyMax: 4 }, stages: [
+    ['In lobby', { state: 'In Lobby' }],
+    ['In queue', { state: 'In Queue' }],
+    ['In match', { state: 'Winning 3 - 0', timer: 'reset' }]
+  ] }
 ];
 
-function presenceExample(game) {
-  const { match, ...example } = PRESENCE_EXAMPLES.find((e) => game.name.toLowerCase().includes(e.match));
-  return example;
-}
+const presenceExample = (game) => PRESENCE_EXAMPLES.find((e) => game.name.toLowerCase().includes(e.match));
 
 function fillPresence(presence = {}) {
   for (const input of $('presenceForm').elements) {
-    if (input.name) input.value = presence[input.name] || (input.tagName === 'SELECT' ? '0' : '');
+    if (input.name) input.value = presence[input.name] || (input.tagName === 'SELECT' ? input.options[0].value : '');
   }
 }
 
 function readPresence() {
   const data = Object.fromEntries(new FormData($('presenceForm')));
-  return { ...data, activityType: Number(data.activityType), partySize: Number(data.partySize) || 0, partyMax: Number(data.partyMax) || 0 };
+  const number = (name) => Number(data[name]) || 0;
+  return { ...data, activityType: number('activityType'), partySize: number('partySize'), partyMax: number('partyMax'), timerMinutes: number('timerMinutes') };
+}
+
+// Image links (and hover texts the stage doesn't set) are kept; everything else comes from the stage.
+function useStage(stage) {
+  const { largeImage, largeText, smallImage, smallText } = readPresence();
+  fillPresence({ largeImage, largeText, smallImage, smallText, ...stage });
+  $('presenceForm').requestSubmit();
 }
 
 async function savePresence(game, presence) {
@@ -820,7 +879,6 @@ $('presenceForm').onsubmit = (e) => {
   e.preventDefault();
   savePresence(gameByKey(state.view.id), readPresence());
 };
-$('presenceExampleBtn').onclick = () => fillPresence(presenceExample(gameByKey(state.view.id)));
 $('presenceClearBtn').onclick = () => {
   fillPresence();
   savePresence(gameByKey(state.view.id), null);

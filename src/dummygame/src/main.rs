@@ -80,8 +80,12 @@ fn read_presence(path: Option<&Path>) -> Option<(String, String)> {
     parse_presence(&fs::read_to_string(path?).ok()?)
 }
 
-/// The activity sent to Discord: the fixed start time plus the app's custom fields, if any.
+/// The activity sent to Discord: the app's custom fields, if any, plus the launch time unless they set their own timer.
 fn activity_json(custom: Option<&str>, start_ms: u128) -> String {
+    // User text can't fake this key: quotes inside JSON strings are escaped.
+    if let Some(c) = custom.filter(|c| c.contains(r#""timestamps":"#)) {
+        return c.to_string();
+    }
     let head = format!(r#"{{"timestamps":{{"start":{start_ms}}}"#);
     match custom.and_then(|c| c.strip_prefix('{')).map(str::trim_start) {
         Some(rest) if rest != "}" => format!("{head},{rest}"),
@@ -369,5 +373,9 @@ mod tests {
         assert_eq!(activity_json(Some(custom), 5), r#"{"timestamps":{"start":5},"details":"Competitive","party":{"size":[2,5]}}"#);
         assert_eq!(activity_json(Some("{}"), 5), r#"{"timestamps":{"start":5}}"#);
         assert_eq!(activity_json(None, 5), r#"{"timestamps":{"start":5}}"#);
+        let countdown = r#"{"state":"In Match","timestamps":{"end":9}}"#;
+        assert_eq!(activity_json(Some(countdown), 5), countdown);
+        let tricky = r#"{"state":"\"timestamps\":"}"#;
+        assert_eq!(activity_json(Some(tricky), 5), r#"{"timestamps":{"start":5},"state":"\"timestamps\":"}"#);
     }
 }
