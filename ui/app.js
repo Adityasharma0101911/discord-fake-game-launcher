@@ -9,7 +9,7 @@ const SHELF_SIZE = 18;
 const LOG_LIMIT = 200;
 
 const state = {
-  library: [], // [{ key, appId, name, exe, isFavorite, rpc, steam?, cover?, icon? }]
+  library: [], // [{ key, appId, name, exe, isFavorite, rpc, steam?, cover?, icon?, presence? }]
   groups: [], // [{ id, name, keys }]
   running: {}, // key -> { startedAt, stopAt } (ms since epoch)
   view: parseView(load('view', '')), // { type: 'discover' | 'game' | 'group', id }
@@ -230,6 +230,57 @@ function renderGame() {
   $('launchBtn').classList.toggle('stop', Boolean(run));
   $('favoriteBtn').textContent = game.isFavorite ? '★ Favorited' : '☆ Favorite';
   $('favoriteBtn').setAttribute('aria-pressed', String(game.isFavorite));
+  // Filled only when another game is opened, so re-renders don't wipe unsaved edits.
+  const form = $('presenceForm');
+  if (form.dataset.key !== game.key) {
+    form.dataset.key = game.key;
+    fillPresence(game.presence);
+    const example = presenceExample(game);
+    for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = example[input.name] ?? '';
+  }
+}
+
+// ---- Custom Discord status ----
+
+// "Fill in an example" uses the first one whose `match` is in the game's name.
+const PRESENCE_EXAMPLES = [
+  { match: 'valorant', activityType: 5, details: 'Competitive • Ascent', state: 'In Match • 12 - 3', partySize: 5, partyMax: 5, largeText: 'Ascent', smallText: 'Jett • Radiant' },
+  { match: 'league of legends', details: 'Summoner’s Rift (Ranked Solo/Duo)', state: 'In Game • 21/0/7 Yasuo', partySize: 2, partyMax: 5, largeText: 'Yasuo', smallText: 'Challenger I' },
+  { match: 'counter-strike', activityType: 5, details: 'Premier • Mirage', state: 'Score 12 : 4', partySize: 5, partyMax: 5, smallText: 'Rating 32,000' },
+  { match: 'fortnite', details: 'Battle Royale • Squads', state: '2 players left • 17 eliminations', partySize: 4, partyMax: 4 },
+  { match: 'rocket league', activityType: 5, details: 'Ranked Doubles • Supersonic Legend', state: 'Score 6 - 0 • 0:12 left', partySize: 2, partyMax: 2 },
+  { match: 'overwatch', details: 'Competitive Push • Colosseo', state: 'Winning 1 - 0 • Kiriko', partySize: 5, partyMax: 5, smallText: 'Champion 1' },
+  { match: 'apex', details: 'Ranked • Apex Predator', state: 'Final circle • 20 kills', partySize: 3, partyMax: 3 },
+  { match: 'minecraft', details: 'Hardcore • Day 4,096', state: 'Fighting the Ender Dragon' },
+  { match: 'rise of kingdoms', details: 'Kingdom 1234 • Power 980M', state: 'Winning the KvK', smallText: 'Governor' },
+  { match: '', details: 'Ranked match', state: 'Winning 3 - 0', partySize: 1, partyMax: 4 }
+];
+
+function presenceExample(game) {
+  const { match, ...example } = PRESENCE_EXAMPLES.find((e) => game.name.toLowerCase().includes(e.match));
+  return example;
+}
+
+function fillPresence(presence = {}) {
+  for (const input of $('presenceForm').elements) {
+    if (input.name) input.value = presence[input.name] || (input.tagName === 'SELECT' ? '0' : '');
+  }
+}
+
+function readPresence() {
+  const data = Object.fromEntries(new FormData($('presenceForm')));
+  return { ...data, activityType: Number(data.activityType), partySize: Number(data.partySize) || 0, partyMax: Number(data.partyMax) || 0 };
+}
+
+async function savePresence(game, presence) {
+  try {
+    const updated = await invoke('set_presence', { key: game.key, presence });
+    state.library = state.library.map((g) => (g.key === game.key ? updated : g));
+    if (!updated.presence) log(`Cleared the Discord status for ${game.name}.`);
+    else log(`Saved the Discord status for ${game.name}; ${state.running[game.key] ? 'Discord shows it within a few seconds' : 'it shows when you launch the game'}.`, 'ok');
+  } catch (e) {
+    log(`Couldn’t save the status: ${e}`, 'error');
+  }
 }
 
 function renderGroup() {
@@ -765,6 +816,15 @@ $('favoriteBtn').onclick = () => toggleFavorite(state.view.id);
 $('gameGroupBtn').onclick = () => addToGroup([state.view.id]);
 $('shortcutBtn').onclick = () => createShortcut(gameByKey(state.view.id));
 $('removeBtn').onclick = () => removeGames([gameByKey(state.view.id)]);
+$('presenceForm').onsubmit = (e) => {
+  e.preventDefault();
+  savePresence(gameByKey(state.view.id), readPresence());
+};
+$('presenceExampleBtn').onclick = () => fillPresence(presenceExample(gameByKey(state.view.id)));
+$('presenceClearBtn').onclick = () => {
+  fillPresence();
+  savePresence(gameByKey(state.view.id), null);
+};
 $('autoStop').onchange = (e) => {
   state.autoStop = Number(e.target.value);
   save('autoStop', String(state.autoStop));

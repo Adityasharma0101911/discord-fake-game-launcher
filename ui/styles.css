@@ -294,6 +294,13 @@ button { cursor: pointer; }
 .facts dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
 .secondary-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
+.presence { margin: 0 0 24px; padding: 16px; border-radius: 12px; background: rgba(0, 0, 0, 0.15); }
+.presence h2 { margin: 0 0 4px; font-size: 16px; color: var(--text-strong); }
+.presence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 16px; }
+.presence-grid label { display: grid; gap: 4px; color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.party { display: flex; align-items: center; gap: 8px; }
+.party .input { width: 80px; }
+
 .member-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 720px; }
 .member { display: flex; align-items: center; gap: 4px; padding-right: 6px; border-radius: 10px; background: var(--bg-card); }
 .member.running .art-member { box-shadow: 0 0 0 2px var(--success); }

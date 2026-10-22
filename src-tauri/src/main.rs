@@ -224,6 +224,24 @@ struct MyGame {
     cover: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence: Option<Presence>,
+}
+
+/// A custom Discord status (Rich Presence) shown while the game runs, e.g. mode, map and score.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+struct Presence {
+    /// Discord activity type: 0 Playing, 2 Listening to, 3 Watching, 5 Competing in.
+    activity_type: u8,
+    details: String,
+    state: String,
+    party_size: u32,
+    party_max: u32,
+    large_image: String,
+    large_text: String,
+    small_image: String,
+    small_text: String,
 }
 
 /// A library game as sent to the UI, with the key every other command takes.
@@ -473,9 +491,13 @@ fn fake_exe_rel_path(game: &MyGame) -> Result<PathBuf, String> {
     Ok(parts.iter().collect())
 }
 
+fn fake_exe_path(app: &AppHandle, game: &MyGame) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("games").join(fake_exe_rel_path(game)?))
+}
+
 /// Writes the fake exe for a game (if missing or outdated) and returns its path.
 fn ensure_fake_exe(app: &AppHandle, game: &MyGame) -> Result<PathBuf, String> {
-    let dest = data_dir(app)?.join("games").join(fake_exe_rel_path(game)?);
+    let dest = fake_exe_path(app, game)?;
     fs::create_dir_all(dest.parent().unwrap()).map_err(err)?;
 
     // Also replaces outdated copies (e.g. the .NET DummyGame from older versions).
@@ -497,6 +519,51 @@ fn fake_exe_args(game: &MyGame) -> Vec<String> {
         args.push(format!("--rpc={}", game.app_id));
     }
     args
+}
+
+/// The activity fields for a custom status. Discord rejects the whole status if a field is out of its limits
+/// (texts 2–128 characters, images 1–300), so those fields are left out instead.
+fn presence_activity(p: &Presence) -> Value {
+    let fit = |s: &str, min: usize, max: usize| {
+        let s = s.trim();
+        (min..=max).contains(&s.chars().count()).then(|| json!(s))
+    };
+    let pick = |fields: Vec<(&str, Option<Value>)>| -> serde_json::Map<String, Value> {
+        fields.into_iter().filter_map(|(k, v)| Some((k.to_string(), v?))).collect()
+    };
+    let mut activity = pick(vec![
+        ("type", [2, 3, 5].contains(&p.activity_type).then(|| json!(p.activity_type))),
+        ("details", fit(&p.details, 2, 128)),
+        ("state", fit(&p.state, 2, 128)),
+        ("party", (p.party_max > 0 && p.party_size <= p.party_max).then(|| json!({ "size": [p.party_size, p.party_max] }))),
+    ]);
+    let assets = pick(vec![
+        ("large_image", fit(&p.large_image, 1, 300)),
+        ("large_text", fit(&p.large_text, 2, 128)),
+        ("small_image", fit(&p.small_image, 1, 300)),
+        ("small_text", fit(&p.small_text, 2, 128)),
+    ]);
+    if !assets.is_empty() {
+        activity.insert("assets".into(), Value::Object(assets));
+    }
+    Value::Object(activity)
+}
+
+/// Writes (or removes) <fake exe>.presence. The fake exe re-reads it every 2 s, so running games update too.
+fn write_presence_file(app: &AppHandle, game: &MyGame) -> Result<(), String> {
+    let mut path = fake_exe_path(app, game)?.into_os_string();
+    path.push(".presence");
+    let path = PathBuf::from(path);
+    match &game.presence {
+        Some(p) => {
+            fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
+            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p))).map_err(err)
+        }
+        None => match fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
+            _ => Ok(()),
+        },
+    }
 }
 
 fn discord_is_running() -> bool {
@@ -899,6 +966,21 @@ fn toggle_favorite(app: AppHandle, key: String) -> Result<Option<GameView>, Stri
     Ok(updated.map(|g| with_db(&app, |db| view(g, Some(db)))))
 }
 
+/// Saves, or with `None` clears, a game's custom Discord status.
+#[tauri::command]
+fn set_presence(app: AppHandle, key: String, presence: Option<Presence>) -> Result<GameView, String> {
+    let mut games = read_my_games(&app)?;
+    let game = games.iter_mut().find(|g| game_key(g) == key).ok_or("Game not found in library.")?;
+    if !is_app_id(&game.app_id) {
+        return Err("This game has no Discord app ID, so it can’t have a custom status.".into());
+    }
+    game.presence = presence.filter(|p| *p != Presence::default());
+    let game = game.clone();
+    write_presence_file(&app, &game)?;
+    write_my_games(&app, &games)?;
+    Ok(with_db(&app, |db| view(game, Some(db))))
+}
+
 #[tauri::command]
 fn remove_games(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     for key in &keys {
@@ -985,6 +1067,8 @@ fn launch_game(app: AppHandle, state: State<'_, AppState>, key: String, minutes:
     let started = (|| -> Result<Child, String> {
         let game = find_game(&app, &key)?;
         let exe = ensure_fake_exe(&app, &game)?;
+        // Also removes a status file left over from a removed and re-added game.
+        write_presence_file(&app, &game)?;
         // The fake exe shows the name as its window title and closes itself after `minutes`.
         let mut command = Command::new(&exe);
         command.args(fake_exe_args(&game)).current_dir(exe.parent().unwrap());
@@ -1114,6 +1198,7 @@ fn main() {
             get_library,
             add_games,
             toggle_favorite,
+            set_presence,
             remove_games,
             get_groups,
             save_group,
@@ -1236,6 +1321,26 @@ mod tests {
         g.rpc = true;
         assert_eq!(fake_exe_args(&g), vec!["Game", "--rpc=1441992604911665204"]);
         assert!(is_app_id("1441992604911665204") && !is_app_id("") && !is_app_id("12a") && !is_app_id(&"9".repeat(26)));
+    }
+
+    #[test]
+    fn custom_status_keeps_only_fields_discord_accepts() {
+        let p = Presence {
+            activity_type: 5,
+            details: " Competitive • Ascent ".into(),
+            state: "7".into(), // Discord wants at least 2 characters
+            party_size: 2,
+            party_max: 5,
+            large_image: "https://example.com/ascent.png".into(),
+            small_text: "x".repeat(129),
+            ..Default::default()
+        };
+        assert_eq!(
+            presence_activity(&p),
+            json!({ "type": 5, "details": "Competitive • Ascent", "party": { "size": [2, 5] }, "assets": { "large_image": "https://example.com/ascent.png" } })
+        );
+        let odd = Presence { activity_type: 1, party_size: 6, party_max: 5, ..Default::default() };
+        assert_eq!(presence_activity(&odd), json!({}));
     }
 
     #[test]

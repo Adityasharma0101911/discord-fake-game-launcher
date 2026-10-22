@@ -20,6 +20,9 @@ shows the game in your status, which also counts toward Discord Quests.
 - **Mobile games and games without a PC exe** (e.g. Rise of Kingdoms) are shown through Discord Rich Presence.
 - **Import from PC:** finds games installed through Steam, Epic Games and Windows’ installed apps (Riot, Battle.net,
   EA, Ubisoft…) that are in Discord’s list.
+- **Custom Discord status:** give any game extra lines like the mode, map and score (“Competing in VALORANT ·
+  Competitive • Ascent · In Match • 12 - 3 (5 of 5)”), with party size and image links. There are examples for
+  popular games, and a running game picks up changes within a few seconds.
 - **Groups:** save sets of games and launch or stop them together.
 - **Multi-select:** pick several games to add at once, or launch, stop, group or remove several library games.
 - Favorites, auto-stop after 15–60 minutes, play time, desktop shortcuts and a warning when Discord isn’t running.
@@ -35,6 +38,8 @@ shows the game in your status, which also counts toward Discord Quests.
 3. The stand-in shows a small window with the game’s name. For games with no PC exe in Discord’s list it also
    connects to the Discord app on your PC and sets “Playing <game>” through Rich Presence. Close it, or stop it from
    the app, to stop “playing”. Discord may not count Rich Presence games toward quests.
+4. A custom status is saved next to the stand-in as `<exe>.presence`. The stand-in checks it every 2 seconds and
+   sends it to Discord through Rich Presence, so it replaces the plain “Playing <game>” line.
 
 Besides Discord, the app contacts Steam’s public charts API and SteamSpy for the popular shelves, and loads cover
 art from Steam’s and Discord’s image servers. No account or API key is needed and no personal data is sent,

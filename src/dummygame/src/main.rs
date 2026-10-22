@@ -2,11 +2,14 @@
 // It gets copied and renamed to the real game's exe (e.g. games/<appId>/win64/cs2.exe).
 // Usage: <exe> "<display name>" [minutes until it closes itself] [--rpc=<discord application id>]
 // --rpc is for games without a Windows exe: the game is shown through Rich Presence over Discord's local IPC pipe.
+// A custom status (details, score, party...) comes from <this exe>.presence, written by the app: line 1 is the
+// Discord app id, line 2 the activity JSON. It is re-read every 2 s, so edits show while the game runs.
 // Debug builds keep a console so the IPC traffic printed by log_frame is visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::fs::OpenOptions;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,7 +49,7 @@ fn parse_args(args: Vec<String>) -> (String, Option<f64>, Option<String>) {
     let (mut minutes, mut rpc) = (None, None);
     for a in args {
         if let Some(id) = a.strip_prefix("--rpc=") {
-            if (1..=25).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit()) {
+            if is_app_id(id) {
                 rpc = Some(id.to_string());
             }
         } else if let Some(m) = a.parse::<f64>().ok().filter(|m| *m > 0.0) {
@@ -54,6 +57,36 @@ fn parse_args(args: Vec<String>) -> (String, Option<f64>, Option<String>) {
         }
     }
     (name, minutes, rpc)
+}
+
+fn is_app_id(id: &str) -> bool {
+    (1..=25).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn presence_path() -> Option<PathBuf> {
+    let mut path = std::env::current_exe().ok()?.into_os_string();
+    path.push(".presence");
+    Some(path.into())
+}
+
+/// (app id, activity JSON object) from a presence file's text.
+fn parse_presence(text: &str) -> Option<(String, String)> {
+    let (id, activity) = text.split_once('\n')?;
+    let (id, activity) = (id.trim(), activity.trim());
+    (is_app_id(id) && activity.starts_with('{') && activity.ends_with('}')).then(|| (id.to_string(), activity.to_string()))
+}
+
+fn read_presence(path: Option<&Path>) -> Option<(String, String)> {
+    parse_presence(&fs::read_to_string(path?).ok()?)
+}
+
+/// The activity sent to Discord: the fixed start time plus the app's custom fields, if any.
+fn activity_json(custom: Option<&str>, start_ms: u128) -> String {
+    let head = format!(r#"{{"timestamps":{{"start":{start_ms}}}"#);
+    match custom.and_then(|c| c.strip_prefix('{')).map(str::trim_start) {
+        Some(rest) if rest != "}" => format!("{head},{rest}"),
+        _ => format!("{head}}}"),
+    }
 }
 
 // Discord IPC frame: LE u32 opcode, LE u32 payload length, UTF-8 JSON.
@@ -65,29 +98,47 @@ fn frame(op: u32, json: &str) -> Vec<u8> {
     f
 }
 
-// Reads frames until a normal one (opcode 1) arrives and returns its JSON. Answers PING, fails on CLOSE.
+// Reads one frame: the JSON of a normal frame (opcode 1), or None after answering a PING. Fails on CLOSE.
+fn read_frame<P: Read + Write>(pipe: &mut P) -> io::Result<Option<String>> {
+    let mut h = [0u8; 8];
+    pipe.read_exact(&mut h)?;
+    let op = u32::from_le_bytes([h[0], h[1], h[2], h[3]]);
+    let len = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
+    if len > 1 << 20 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "IPC frame too large"));
+    }
+    let mut buf = vec![0; len];
+    pipe.read_exact(&mut buf)?;
+    let json = String::from_utf8_lossy(&buf).into_owned();
+    if cfg!(debug_assertions) {
+        log_frame(op, &json);
+    }
+    match op {
+        1 => return Ok(Some(json)),
+        2 => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "Discord closed the IPC connection")),
+        3 => pipe.write_all(&frame(4, &json))?,
+        _ => {}
+    }
+    Ok(None)
+}
+
 fn next_frame<P: Read + Write>(pipe: &mut P) -> io::Result<String> {
     loop {
-        let mut h = [0u8; 8];
-        pipe.read_exact(&mut h)?;
-        let op = u32::from_le_bytes([h[0], h[1], h[2], h[3]]);
-        let len = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
-        if len > 1 << 20 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "IPC frame too large"));
-        }
-        let mut buf = vec![0; len];
-        pipe.read_exact(&mut buf)?;
-        let json = String::from_utf8_lossy(&buf).into_owned();
-        if cfg!(debug_assertions) {
-            log_frame(op, &json);
-        }
-        match op {
-            1 => return Ok(json),
-            2 => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "Discord closed the IPC connection")),
-            3 => pipe.write_all(&frame(4, &json))?,
-            _ => {}
+        if let Some(json) = read_frame(pipe)? {
+            return Ok(json);
         }
     }
+}
+
+// Bytes Discord has sent that are not read yet. Fails once Discord has closed the pipe.
+fn bytes_waiting(pipe: &File) -> io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+    let mut n = 0;
+    if unsafe { PeekNamedPipe(pipe.as_raw_handle(), null_mut(), 0, null_mut(), &mut n, null_mut()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(n)
 }
 
 // Debug only. Never print whole payloads: READY carries the user's account (username, id, avatar).
@@ -112,31 +163,55 @@ fn log_frame(op: u32, json: &str) {
     }
 }
 
-fn rpc_session(id: &str, start_ms: u128) -> io::Result<()> {
+// Shows the game in Discord until Discord goes away (Err) or, for exe games, the custom status is removed (Ok).
+// `fixed_id` (--rpc) means the game is always shown; otherwise only while a presence file exists.
+fn rpc_session(fixed_id: Option<&str>, path: Option<&Path>, start_ms: u128) -> io::Result<()> {
+    let mut custom = read_presence(path);
+    let Some(id) = fixed_id.map(str::to_string).or_else(|| custom.as_ref().map(|c| c.0.clone())) else {
+        return Ok(());
+    };
     let mut pipe = (0..10)
         .find_map(|i| OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no Discord IPC pipe (Discord not running?)"))?;
     pipe.write_all(&frame(0, &format!(r#"{{"v":1,"client_id":"{id}"}}"#)))?;
     while !next_frame(&mut pipe)?.contains(r#""evt":"READY""#) {}
     let pid = std::process::id();
-    let activity = format!(
-        r#"{{"cmd":"SET_ACTIVITY","nonce":"1","args":{{"pid":{pid},"activity":{{"type":0,"timestamps":{{"start":{start_ms}}}}}}}}}"#
-    );
-    pipe.write_all(&frame(1, &activity))?;
-    // Nothing else to send; reading only notices Discord quitting/restarting so we can reconnect.
+    let send = |pipe: &mut File, custom: &Option<(String, String)>| {
+        let activity = activity_json(custom.as_ref().map(|c| c.1.as_str()), start_ms);
+        pipe.write_all(&frame(1, &format!(r#"{{"cmd":"SET_ACTIVITY","nonce":"1","args":{{"pid":{pid},"activity":{activity}}}}}"#)))
+    };
+    send(&mut pipe, &custom)?;
+    // Polled rather than a blocking read: a pending read on this pipe handle would also hold up writes.
     loop {
-        next_frame(&mut pipe)?;
+        std::thread::sleep(Duration::from_secs(2));
+        while bytes_waiting(&pipe)? > 0 {
+            read_frame(&mut pipe)?;
+        }
+        let now = read_presence(path);
+        if fixed_id.is_none() && now.is_none() {
+            return Ok(()); // closing the pipe clears the status, so Discord falls back to detecting the exe
+        }
+        if now != custom {
+            custom = now;
+            send(&mut pipe, &custom)?;
+        }
     }
 }
 
 // Runs on its own thread forever; the process still exits when main returns (ExitProcess kills it).
-fn rpc_loop(id: String, start_ms: u128) {
+fn rpc_loop(fixed_id: Option<String>, start_ms: u128) {
+    let path = presence_path();
     loop {
-        let e = rpc_session(&id, start_ms).unwrap_err();
-        if cfg!(debug_assertions) {
-            eprintln!("rpc: {e}; retrying in 5 s");
-        }
-        std::thread::sleep(Duration::from_secs(5));
+        let wait = match rpc_session(fixed_id.as_deref(), path.as_deref(), start_ms) {
+            Ok(()) => 2,
+            Err(e) => {
+                if cfg!(debug_assertions) {
+                    eprintln!("rpc: {e}; retrying in 5 s");
+                }
+                5
+            }
+        };
+        std::thread::sleep(Duration::from_secs(wait));
     }
 }
 
@@ -146,12 +221,12 @@ fn main() {
         .and_then(|m| Duration::try_from_secs_f64(m * 60.0).ok())
         .and_then(|d| Instant::now().checked_add(d));
     let mut head = format!("{name} (fake process for Discord)");
-    if let Some(id) = rpc {
+    if rpc.is_some() {
         head.push_str("\nshown in Discord through Rich Presence");
-        // Fixed once so Discord's elapsed timer survives reconnects.
-        let start_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
-        std::thread::spawn(move || rpc_loop(id, start_ms));
     }
+    // Fixed once so Discord's elapsed timer survives reconnects.
+    let start_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    std::thread::spawn(move || rpc_loop(rpc, start_ms));
     HEAD.get_or_init(|| head);
     DEADLINE.get_or_init(|| at);
     let title = wide(&name);
@@ -280,5 +355,19 @@ mod tests {
         // CLOSE and EOF are errors (both mean reconnect).
         assert!(next_frame(&mut Pipe(io::Cursor::new(frame(2, "{}")), vec![])).is_err());
         assert!(next_frame(&mut pipe).is_err());
+        // A lone PING is answered without waiting for another frame.
+        assert_eq!(read_frame(&mut Pipe(io::Cursor::new(frame(3, "p")), vec![])).unwrap(), None);
+    }
+
+    #[test]
+    fn builds_presence() {
+        let custom = r#"{"details":"Competitive","party":{"size":[2,5]}}"#;
+        assert_eq!(parse_presence(&format!("700136079562375258\n{custom}\n")), Some(("700136079562375258".into(), custom.into())));
+        assert_eq!(parse_presence("abc\n{}"), None);
+        assert_eq!(parse_presence("123\nnot json"), None);
+        assert_eq!(parse_presence("123"), None);
+        assert_eq!(activity_json(Some(custom), 5), r#"{"timestamps":{"start":5},"details":"Competitive","party":{"size":[2,5]}}"#);
+        assert_eq!(activity_json(Some("{}"), 5), r#"{"timestamps":{"start":5}}"#);
+        assert_eq!(activity_json(None, 5), r#"{"timestamps":{"start":5}}"#);
     }
 }

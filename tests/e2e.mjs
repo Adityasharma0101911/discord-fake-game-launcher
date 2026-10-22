@@ -195,6 +195,17 @@ try {
   assert.deepEqual(exited, [KEY, KEY, KEY], 'stop, auto-stop and external kill all reported');
   console.log('stop / auto-stop / external exit events: ok');
 
+  // Custom status: saved to the library and written next to the fake exe, which re-reads it while running.
+  const presenceFile = path.join(process.env.APPDATA, 'com.endo.discordgamespoofer', 'games', TEST_GAME.id, 'e2e', `${FAKE}.presence`);
+  const saved = await run(call('set_presence', { key: KEY, presence: { activityType: 5, details: 'Competitive', state: 'x', partySize: 2, partyMax: 5 } }));
+  assert.equal(saved.presence.details, 'Competitive');
+  const [fileId, activity] = fs.readFileSync(presenceFile, 'utf8').split('\n');
+  assert.equal(fileId, TEST_GAME.id);
+  assert.deepEqual(JSON.parse(activity), { type: 5, details: 'Competitive', party: { size: [2, 5] } }, 'too-short state left out');
+  assert.equal((await run(call('set_presence', { key: KEY, presence: null }))).presence, undefined);
+  assert.ok(!fs.existsSync(presenceFile), 'cleared status removes the file');
+  console.log('custom Discord status file: ok');
+
   const sc = await run(call('create_shortcut', { key: KEY }));
   assert.ok(sc.ok, JSON.stringify(sc));
   const lnk = ps(`$s = (New-Object -ComObject WScript.Shell).CreateShortcut('${sc.path.replace(/'/g, "''")}'); $s.TargetPath; $s.Arguments`).split(/\r?\n/);
