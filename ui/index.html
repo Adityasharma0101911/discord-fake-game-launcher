@@ -101,7 +101,15 @@
           <p class="subtle small-text">Extra lines under the game on your Discord profile, like the mode, map and score. A running game updates within a few seconds.</p>
           <div class="stages">
             <span class="subtle small-text">Quick switch (saves right away):</span>
-            <div id="presenceStages" class="stage-buttons"></div>
+            <div class="stage-buttons">
+              <span id="presenceStages" class="stage-buttons"></span>
+              <button type="button" id="scoreUsBtn" class="btn small" title="Adds 1 to the left score in the second line">+1 you</button>
+              <button type="button" id="scoreThemBtn" class="btn small" title="Adds 1 to the right score in the second line">+1 them</button>
+            </div>
+            <div class="stage-buttons">
+              <button type="button" id="autoplayBtn" class="btn small primary"></button>
+              <span id="autoplayText" class="subtle small-text" aria-live="polite"></span>
+            </div>
           </div>
           <div class="presence-grid">
             <label>Shown as
@@ -125,10 +133,13 @@
             <label>Minutes left (for “Time left”) <input name="timerMinutes" class="input" type="number" min="1" max="1440"></label>
             <label>Top line <input name="details" class="input" minlength="2" maxlength="128"></label>
             <label>Second line <input name="state" class="input" minlength="2" maxlength="128"></label>
+            <label>Top line link <input name="detailsUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>
+            <label>Second line link <input name="stateUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>
             <label>Big image link <input name="largeImage" class="input" type="url" pattern="https?://.+" maxlength="300" placeholder="https://… (optional)"></label>
             <label>Big image hover text <input name="largeText" class="input" minlength="2" maxlength="128"></label>
             <label>Small image link <input name="smallImage" class="input" type="url" pattern="https?://.+" maxlength="300" placeholder="https://… (optional)"></label>
             <label>Small image hover text <input name="smallText" class="input" minlength="2" maxlength="128"></label>
+            <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, and friends who ask get no answer.</label>
           </div>
           <div class="secondary-actions">
             <button class="btn primary">Save status</button>

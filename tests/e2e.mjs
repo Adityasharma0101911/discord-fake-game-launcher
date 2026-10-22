@@ -207,7 +207,29 @@ try {
   assert.deepEqual(rest, { type: 5, details: 'Competitive', party: { size: [2, 5] } }, 'too-short state left out');
   assert.equal((await run(call('set_presence', { key: KEY, presence: null }))).presence, undefined);
   assert.ok(!fs.existsSync(presenceFile), 'cleared status removes the file');
-  console.log('custom Discord status file: ok');
+  // Auto-play steps through statuses while the game runs and ends when it stops.
+  assert.match(await run(`try { await window.__TAURI__.core.invoke('play_presence', { key: ${JSON.stringify(KEY)}, steps: [{ presence: {}, seconds: 1 }] }); return 'accepted'; } catch (e) { return String(e); }`), /Launch the game first/);
+  await run(call('launch_game', { key: KEY }));
+  const steps = [{ presence: { state: 'In Lobby' }, seconds: 1 }, { presence: { state: 'In Match • 1 - 0' }, seconds: 60, keepTimer: true }];
+  await run(call('play_presence', { key: KEY, steps }));
+  await sleep(2500);
+  assert.match(fs.readFileSync(presenceFile, 'utf8'), /In Match • 1 - 0/, 'second step shown');
+  assert.deepEqual(await run(call('get_autoplay')), [KEY]);
+  await run(call('stop_game', { key: KEY }));
+  await sleep(1500);
+  assert.deepEqual(await run(call('get_autoplay')), [], 'auto-play ends with the game');
+  // A generated VALORANT session: lobby, queue, agent select, then rounds up to 13.
+  const plan = await run(`return sessionPlan(presenceExample({ name: 'VALORANT' }), {})`);
+  const lines = plan.map((s) => s.presence.state);
+  assert.deepEqual(lines.slice(0, 4), ['In Lobby', 'In Queue', 'Agent Select', 'In Match • 0 - 0']);
+  assert.ok(lines.some((s) => /^(Victory • 13 - \d+|Defeat • \d+ - 13)$/.test(s)), 'a match ends at 13');
+  assert.ok(plan.reduce((t, s) => t + s.seconds, 0) >= 4 * 3600, 'about four hours of sessions');
+  // +1 you: the last score in the second line goes up and is saved.
+  await run(`setView('game', ${JSON.stringify(KEY)}); document.getElementById('presenceForm').elements.state.value = 'In Match • 12 - 3'; bumpScore(0); return 1`);
+  await sleep(800);
+  assert.equal((await run(call('get_library'))).find((g) => g.key === KEY).presence.state, 'In Match • 13 - 3');
+  await run(call('set_presence', { key: KEY, presence: null }));
+  console.log('custom Discord status file / auto-play / session plan / score button: ok');
 
   const sc = await run(call('create_shortcut', { key: KEY }));
   assert.ok(sc.ok, JSON.stringify(sc));

@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -65,6 +66,8 @@ struct AppState {
     db: Mutex<Option<Db>>,
     popular: Mutex<Option<Popular>>,
     running: Mutex<HashMap<String, RunningGame>>,
+    /// Auto-play sessions by game key; setting the flag stops one. Held while a status file is written.
+    autoplay: Mutex<HashMap<String, Arc<AtomicBool>>>,
     update: Mutex<Option<Update>>,
     downloaded: Mutex<Option<(Update, Vec<u8>)>>,
 }
@@ -236,6 +239,11 @@ struct Presence {
     activity_type: u8,
     details: String,
     state: String,
+    /// Links that make the top and second line clickable.
+    details_url: String,
+    state_url: String,
+    /// Discord's "Ask to Join" button. Only shown for Playing; friends who ask get no answer.
+    ask_to_join: bool,
     party_size: u32,
     party_max: u32,
     large_image: String,
@@ -245,6 +253,16 @@ struct Presence {
     /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`.
     timer: String,
     timer_minutes: u32,
+}
+
+/// One status in an auto-play session, shown for `seconds`. `keep_timer` continues the previous step's timer.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanStep {
+    presence: Presence,
+    seconds: u32,
+    #[serde(default)]
+    keep_timer: bool,
 }
 
 /// A library game as sent to the UI, with the key every other command takes.
@@ -532,14 +550,23 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
         let s = s.trim();
         (min..=max).contains(&s.chars().count()).then(|| json!(s))
     };
+    let link = |s: &str| fit(s, 1, 256).filter(|_| s.trim().starts_with("https://") || s.trim().starts_with("http://"));
     let pick = |fields: Vec<(&str, Option<Value>)>| -> serde_json::Map<String, Value> {
         fields.into_iter().filter_map(|(k, v)| Some((k.to_string(), v?))).collect()
     };
+    // Discord only offers Ask to Join on a party with a join secret; the two ids just have to differ.
+    let party = pick(vec![
+        ("id", p.ask_to_join.then(|| json!("endo-party"))),
+        ("size", (p.party_max > 0 && p.party_size <= p.party_max).then(|| json!([p.party_size, p.party_max]))),
+    ]);
     let mut activity = pick(vec![
-        ("type", [2, 3, 5].contains(&p.activity_type).then(|| json!(p.activity_type))),
+        ("type", (!p.ask_to_join && [2, 3, 5].contains(&p.activity_type)).then(|| json!(p.activity_type))),
         ("details", fit(&p.details, 2, 128)),
+        ("details_url", link(&p.details_url)),
         ("state", fit(&p.state, 2, 128)),
-        ("party", (p.party_max > 0 && p.party_size <= p.party_max).then(|| json!({ "size": [p.party_size, p.party_max] }))),
+        ("state_url", link(&p.state_url)),
+        ("party", (!party.is_empty()).then_some(Value::Object(party))),
+        ("secrets", p.ask_to_join.then(|| json!({ "join": "endo-join" }))),
         // Without timestamps the fake exe adds the launch time.
         (
             "timestamps",
@@ -563,14 +590,15 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
 }
 
 /// Writes (or removes) <fake exe>.presence. The fake exe re-reads it every 2 s, so running games update too.
-fn write_presence_file(app: &AppHandle, game: &MyGame) -> Result<(), String> {
+/// `now` anchors "reset" and "left" timers.
+fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), String> {
     let mut path = fake_exe_path(app, game)?.into_os_string();
     path.push(".presence");
     let path = PathBuf::from(path);
     match &game.presence {
         Some(p) => {
             fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
-            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p, now_ms()))).map_err(err)
+            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p, now))).map_err(err)
         }
         None => match fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
@@ -979,9 +1007,9 @@ fn toggle_favorite(app: AppHandle, key: String) -> Result<Option<GameView>, Stri
     Ok(updated.map(|g| with_db(&app, |db| view(g, Some(db)))))
 }
 
-/// Saves, or with `None` clears, a game's custom Discord status.
+/// Saves, or with `None` clears, a game's custom Discord status. Stops the game's auto-play.
 #[tauri::command]
-fn set_presence(app: AppHandle, key: String, presence: Option<Presence>) -> Result<GameView, String> {
+fn set_presence(app: AppHandle, state: State<'_, AppState>, key: String, presence: Option<Presence>) -> Result<GameView, String> {
     let mut games = read_my_games(&app)?;
     let game = games.iter_mut().find(|g| game_key(g) == key).ok_or("Game not found in library.")?;
     if !is_app_id(&game.app_id) {
@@ -989,9 +1017,78 @@ fn set_presence(app: AppHandle, key: String, presence: Option<Presence>) -> Resu
     }
     game.presence = presence.filter(|p| *p != Presence::default());
     let game = game.clone();
-    write_presence_file(&app, &game)?;
+    {
+        let mut autoplay = state.autoplay.lock().unwrap();
+        if let Some(stop) = autoplay.remove(&key) {
+            stop.store(true, Ordering::SeqCst);
+        }
+        write_presence_file(&app, &game, now_ms())?;
+    }
     write_my_games(&app, &games)?;
     Ok(with_db(&app, |db| view(game, Some(db))))
+}
+
+/// Starts an auto-play session for a running game: each step's status in turn, written to the status file only
+/// (the library keeps the saved status). No steps stops the session and puts the saved status back.
+/// The session ends when the game stops; it then emits "autoplay-ended".
+#[tauri::command]
+fn play_presence(app: AppHandle, state: State<'_, AppState>, key: String, steps: Vec<PlanStep>) -> Result<(), String> {
+    let game = find_game(&app, &key)?;
+    let mut autoplay = state.autoplay.lock().unwrap();
+    if let Some(stop) = autoplay.remove(&key) {
+        stop.store(true, Ordering::SeqCst);
+    }
+    if steps.is_empty() {
+        return write_presence_file(&app, &game, now_ms());
+    }
+    if !is_app_id(&game.app_id) {
+        return Err("This game has no Discord app ID, so it can’t have a custom status.".into());
+    }
+    if !state.running.lock().unwrap().contains_key(&key) {
+        return Err("Launch the game first.".into());
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    autoplay.insert(key.clone(), stop.clone());
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let running = || !stop.load(Ordering::SeqCst) && state.running.lock().unwrap().contains_key(&key);
+        let mut timer_from = now_ms();
+        'steps: for step in steps {
+            {
+                // Checked under the lock so a status saved meanwhile is never overwritten.
+                let _autoplay = state.autoplay.lock().unwrap();
+                if !running() {
+                    break;
+                }
+                if !step.keep_timer {
+                    timer_from = now_ms();
+                }
+                let shown = MyGame { presence: Some(step.presence.clone()), ..game.clone() };
+                if write_presence_file(&app, &shown, timer_from).is_err() {
+                    break;
+                }
+            }
+            let _ = app.emit("presence-step", json!({ "key": key, "presence": step.presence }));
+            for _ in 0..step.seconds.max(1) {
+                std::thread::sleep(Duration::from_secs(1));
+                if !running() {
+                    break 'steps;
+                }
+            }
+        }
+        let mut autoplay = state.autoplay.lock().unwrap();
+        // Only if this session wasn't stopped or replaced from the UI, which updates itself then.
+        if autoplay.get(&key).is_some_and(|s| Arc::ptr_eq(s, &stop)) {
+            autoplay.remove(&key);
+            let _ = app.emit("autoplay-ended", &key);
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn get_autoplay(state: State<'_, AppState>) -> Vec<String> {
+    state.autoplay.lock().unwrap().keys().cloned().collect()
 }
 
 #[tauri::command]
@@ -1081,7 +1178,7 @@ fn launch_game(app: AppHandle, state: State<'_, AppState>, key: String, minutes:
         let game = find_game(&app, &key)?;
         let exe = ensure_fake_exe(&app, &game)?;
         // Also removes a status file left over from a removed and re-added game.
-        write_presence_file(&app, &game)?;
+        write_presence_file(&app, &game, now_ms())?;
         // The fake exe shows the name as its window title and closes itself after `minutes`.
         let mut command = Command::new(&exe);
         command.args(fake_exe_args(&game)).current_dir(exe.parent().unwrap());
@@ -1212,6 +1309,8 @@ fn main() {
             add_games,
             toggle_favorite,
             set_presence,
+            play_presence,
+            get_autoplay,
             remove_games,
             get_groups,
             save_group,
@@ -1358,6 +1457,18 @@ mod tests {
         assert_eq!(presence_activity(&reset, 1000), json!({ "timestamps": { "start": 1000 } }));
         let left = Presence { timer: "left".into(), timer_minutes: 2, ..Default::default() };
         assert_eq!(presence_activity(&left, 1000), json!({ "timestamps": { "end": 121_000 } }));
+        // Ask to Join needs a party id, a join secret and Playing; only http(s) links are kept.
+        let join = Presence {
+            activity_type: 5,
+            ask_to_join: true,
+            details_url: "https://tracker.gg/valorant".into(),
+            state_url: "javascript:alert(1)".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            presence_activity(&join, 1000),
+            json!({ "details_url": "https://tracker.gg/valorant", "party": { "id": "endo-party" }, "secrets": { "join": "endo-join" } })
+        );
     }
 
     #[test]
