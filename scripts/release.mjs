@@ -23,7 +23,13 @@ function fail(message) {
 }
 const run = (cmd, cmdArgs, opts = {}) => execFileSync(cmd, cmdArgs, { cwd: root, stdio: 'inherit', ...opts });
 const out = (cmd, cmdArgs) => execFileSync(cmd, cmdArgs, { cwd: root, encoding: 'utf8' }).trim();
-const tryOut = (cmd, cmdArgs) => { try { return out(cmd, cmdArgs); } catch { return ''; } };
+const tryOut = (cmd, cmdArgs) => {
+  try {
+    return execFileSync(cmd, cmdArgs, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+};
 
 if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) fail('Usage: npm run release -- X.Y.Z [--dry-run]');
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY && !fs.existsSync(key)) fail(`Signing key not found: ${key}`);
@@ -69,8 +75,13 @@ if (dryRun) {
   process.exit(0);
 }
 
-// npm is a .cmd on Windows, which needs a shell; the version was validated above.
-run('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { shell: true });
+// What `npm version --no-git-tag-version` does, without spawning npm.cmd through a shell.
+for (const file of ['package.json', 'package-lock.json']) {
+  const json = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
+  json.version = version;
+  if (json.packages?.['']) json.packages[''].version = version;
+  fs.writeFileSync(path.join(root, file), `${JSON.stringify(json, null, 2)}\n`);
+}
 run('git', ['commit', '-am', `Release ${version}`]);
 run('git', ['tag', tag]);
 run('git', ['push', 'origin', 'HEAD', tag]);
