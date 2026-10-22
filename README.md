@@ -12,12 +12,19 @@ shows the game in your status, which also counts toward Discord Quests.
 
 ## Features
 
-- Search Discord’s full list of detectable games and add the ones you want to a library.
-- Launch, stop and favorite games; launch all favorites at once.
-- Auto-stop a game after 15–60 minutes, with play time and a countdown shown in the app.
-- Close the window and running games keep going from the tray icon; the app quits when the last one stops.
-- Warns you when Discord isn’t running.
-- Desktop shortcuts that start a fake game without opening the app.
+- **Find games:** search all ~24,800 games and apps in Discord’s list, with typo-tolerant search that also
+  matches other names and ignores accents and punctuation. Filter to games Discord detects by exe (best for quests),
+  Rich Presence ones, or mobile games. Paste a Discord application ID to add any app, even one missing from the list.
+- **Popular shelves:** most played on Steam right now, top rated on Steam, big games from other launchers, and
+  mobile games, all with cover art.
+- **Mobile games and games without a PC exe** (e.g. Rise of Kingdoms) are shown through Discord Rich Presence.
+- **Import from PC:** finds games installed through Steam, Epic Games and Windows’ installed apps (Riot, Battle.net,
+  EA, Ubisoft…) that are in Discord’s list.
+- **Groups:** save sets of games and launch or stop them together.
+- **Multi-select:** pick several games to add at once, or launch, stop, group or remove several library games.
+- Favorites, auto-stop after 15–60 minutes, play time, desktop shortcuts and a warning when Discord isn’t running.
+- Closing the window keeps running games going from the tray icon (about 10 MB of memory); the app quits when the last
+  one stops.
 - Signed automatic updates from GitHub releases.
 
 ## How it works
@@ -25,10 +32,16 @@ shows the game in your status, which also counts toward Discord Quests.
 1. The app downloads Discord’s detectable-games list (only when it has changed) and keeps a small index of it.
 2. When you launch a game it writes the stand-in program to
    `%APPDATA%/com.endo.discordgamespoofer/games/<GameID>/<path from Discord’s list>` and runs it.
-3. The stand-in just shows a small window with the game’s name. Close it, or stop it from the app, to stop “playing”.
+3. The stand-in shows a small window with the game’s name. For games with no PC exe in Discord’s list it also
+   connects to the Discord app on your PC and sets “Playing <game>” through Rich Presence. Close it, or stop it from
+   the app, to stop “playing”. Discord may not count Rich Presence games toward quests.
+
+Besides Discord, the app contacts Steam’s public charts API and SteamSpy for the popular shelves, and loads cover
+art from Steam’s and Discord’s image servers. No account or API key is needed and no personal data is sent,
+though like any web request those servers see your IP address.
 
 The app is built with [Tauri](https://tauri.app). The window is plain HTML/CSS/JS in `ui/`, running in Windows’
-built-in WebView2, and the backend is Rust in `src-tauri/`. The stand-in program (`src/dummygame`) is a ~110 KB
+built-in WebView2, and the backend is Rust in `src-tauri/`. The stand-in program (`src/dummygame`) is a ~170 KB
 native Win32 exe that is built and embedded into the app automatically.
 
 ## Build

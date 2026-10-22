@@ -19,7 +19,7 @@ mslnk = "0.1"
 # Versions match what Tauri already uses on Windows, so nothing extra is compiled.
 webview2-com = "0.39"
 windows-core = "0.62"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry"] }
 
 [profile.release]
 opt-level = "s"

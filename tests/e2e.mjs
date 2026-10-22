@@ -1,5 +1,5 @@
 // End-to-end test of the built app, driven through WebView2's DevTools protocol.
-// Usage: npm run build && npm run test:e2e [-- screenshot.png]
+// Usage: npm run build && npm run test:e2e [-- screenshot-prefix]
 // Uses the real Discord API and your app data folder (it adds, then removes, a test game),
 // and creates then deletes a desktop shortcut.
 import { spawn, execSync } from 'node:child_process';
@@ -9,11 +9,14 @@ import assert from 'node:assert/strict';
 
 const root = path.resolve(import.meta.dirname, '..');
 const appExe = path.join(root, 'src-tauri', 'target', 'release', 'endos-discord-game-spoofer.exe');
-const shotPath = process.argv[2];
+// Optional screenshot prefix: <prefix>-discover.png, -search.png, -game.png, -group.png.
+const shotPrefix = process.argv[2]?.replace(/\.png$/i, '');
 const PORT = 9333;
 const FAKE = 'e2egame_endo.exe';
 const TEST_GAME = { id: '999000', name: 'E2E <img id="xss" src=x> "Game"', exe: `e2e/${FAKE}` };
 const KEY = `${TEST_GAME.id}::${TEST_GAME.exe}`;
+const RPC_GAME = { id: '999001', name: 'E2E RPC', exe: 'E2E RPC.exe', rpc: true };
+const RPC_KEY = `${RPC_GAME.id}::${RPC_GAME.exe}`;
 // The test moves the window; the user's saved position is put back afterwards.
 const windowStateFile = path.join(process.env.APPDATA, 'com.endo.discordgamespoofer', '.window-state.json');
 const savedWindowState = fs.existsSync(windowStateFile) ? fs.readFileSync(windowStateFile) : null;
@@ -40,9 +43,11 @@ const USER32 = `Add-Type -Name W -Namespace U -MemberDefinition '
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   public struct RECT { public int L, T, R, B; }'`;
-function windowRect(pid, move) {
+// MainWindowHandle points at another window while the app is minimized, so the handle is read once up front.
+const mainWindow = (pid) => ps(`(Get-Process -Id ${pid}).MainWindowHandle`);
+function windowRect(hwnd, move) {
   return ps(`${USER32}
-    $h = (Get-Process -Id ${pid}).MainWindowHandle
+    $h = [IntPtr]${hwnd}
     ${move ? `[void][U.W]::SetWindowPos($h, [IntPtr]::Zero, ${move.join(', ')}, 0x14)` : ''}
     $r = New-Object U.W+RECT; [void][U.W]::GetWindowRect($h, [ref]$r); "$($r.L),$($r.T),$($r.R),$($r.B)"`);
 }
@@ -99,10 +104,16 @@ async function connect(app) {
   return { app, ws, send, run, problems };
 }
 
+async function shot(name) {
+  if (!shotPrefix) return;
+  const r = await session.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(`${shotPrefix}-${name}.png`, Buffer.from(r.result.data, 'base64'));
+}
+
 const call = (cmd, args = {}) => `return window.__TAURI__.core.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)})`;
 
 let session = await startApp();
-let { app, run, send } = session;
+let { app, run } = session;
 try {
   let logText = '';
   for (let i = 0; i < 100 && !/game list/.test(logText); i++) {
@@ -117,16 +128,38 @@ try {
   assert.deepEqual(await run(call('sync_game_list')), { updated: false });
   console.log('catalog search + 304 resync: ok');
 
-  console.log('discord running:', await run(call('discord_running')));
-  const previousSelection = await run(`return localStorage.getItem('selectedKey')`);
+  // Search forgives typos and punctuation; mobile-only games come back as Rich Presence entries.
+  const first = async (filter, kind) => (await run(call('search_games', { filter, kind, limit: 5 }))).items[0]?.name;
+  assert.equal(await first('valornt'), 'VALORANT', 'typo forgiven');
+  assert.equal(await first('counterstrike 2'), 'Counter-Strike 2');
+  const rok = (await run(call('search_games', { filter: 'rise of kingdoms', kind: 'mobile', limit: 5 }))).items[0];
+  assert.ok(rok.name === 'Rise of Kingdoms' && rok.rpc && rok.mobile, 'mobile game shown through Rich Presence');
+  assert.equal((await run(call('lookup_app', { id: rok.id }))).name, 'Rise of Kingdoms');
+  assert.match(await run(`try { await window.__TAURI__.core.invoke('lookup_app', { id: 'abc' }); return 'accepted'; } catch (e) { return String(e); }`), /long number/);
+  console.log('search (typos, punctuation, mobile filter) / app lookup: ok');
 
-  await run(call('remove_game', { key: KEY })); // leftover from an interrupted run
-  const added = await run(call('add_game', { game: TEST_GAME }));
+  const d = await run(call('discover'));
+  assert.ok(d.beyondSteam.some((c) => c.game.name === 'VALORANT'));
+  console.log(`discover: ${d.mostPlayed.length} most played, ${d.topRated.length} top rated, ${d.beyondSteam.length} beyond Steam, ${d.mobile.length} mobile, ${d.count} in Discord's list`);
+  const installedCount = (await run(call('scan_installed'))).length;
+  console.log(`import from PC: ${installedCount} installed games found in Discord's list`);
+  await run(`setView('discover'); return 1`);
+  await sleep(3000);
+  await shot('discover');
+  await run(`const s = document.getElementById('catalogSearch'); s.value = 'rise'; s.dispatchEvent(new Event('input')); return 1`);
+  await sleep(2500);
+  await shot('search');
+
+  console.log('discord running:', await run(call('discord_running')));
+  const previousView = await run(`return localStorage.getItem('view')`);
+
+  await run(call('remove_games', { keys: [KEY, RPC_KEY] })); // leftovers from an interrupted run
+  const [added] = await run(call('add_games', { games: [TEST_GAME] }));
   assert.equal(added.key, KEY);
-  const rejected = await run(`try { await window.__TAURI__.core.invoke('add_game', { game: { id: '1', name: 'x', exe: '../../evil.exe' } }); return 'accepted'; } catch (e) { return String(e); }`);
+  const rejected = await run(`try { await window.__TAURI__.core.invoke('add_games', { games: [{ id: '1', name: 'x', exe: '../../evil.exe' }] }); return 'accepted'; } catch (e) { return String(e); }`);
   assert.match(rejected, /Unsupported exe path/);
   assert.equal((await run(call('toggle_favorite', { key: KEY }))).isFavorite, true);
-  await run(`await refresh(); selectGame(${JSON.stringify(KEY)}); return 1`);
+  await run(`await refresh(); setView('game', ${JSON.stringify(KEY)}); return 1`);
   assert.equal(await run(`return document.getElementById('xss')`), null, 'game names are shown as text');
   console.log('add / reject unsafe path / favorite / escaping: ok');
 
@@ -141,10 +174,7 @@ try {
   assert.ok((await run(call('launch_game', { key: KEY }))).alreadyRunning);
   console.log(`launch${favorites.length === 1 ? ' via favorites button' : ''} / play time "${timeText}" / alreadyRunning: ok`);
 
-  if (shotPath) {
-    const shot = await send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(shotPath, Buffer.from(shot.result.data, 'base64'));
-  }
+  await shot('game');
 
   assert.equal(await run(call('stop_game', { key: KEY })), true);
   await sleep(500);
@@ -172,18 +202,51 @@ try {
   assert.ok(lnk[0].endsWith(FAKE));
   console.log('desktop shortcut: ok');
 
+  // Rich Presence game: the fake exe gets --rpc=<app id>. The id is made up, so Discord ignores it.
+  await run(call('add_games', { games: [RPC_GAME] }));
+  assert.match(await run(`try { await window.__TAURI__.core.invoke('add_games', { games: [{ id: 'x1', name: 'x', exe: 'x.exe', rpc: true }] }); return 'accepted'; } catch (e) { return String(e); }`), /Unsupported app id/);
+  // A group launches both games from its page, then stops them together.
+  const group = await run(call('save_group', { group: { id: '', name: 'E2E group', keys: [KEY, RPC_KEY, KEY] } }));
+  assert.deepEqual(group.keys, [KEY, RPC_KEY], 'duplicate keys dropped');
+  await run(`await refresh(); setView('group', ${JSON.stringify(group.id)}); document.getElementById('groupLaunchBtn').click(); return 1`);
+  await sleep(2000);
+  assert.ok(fakeRunning(), 'group launched the exe game');
+  assert.match(ps(`(Get-CimInstance Win32_Process -Filter "Name='${RPC_GAME.exe}'").CommandLine`), /--rpc=999001/);
+  assert.equal(await run(`return document.getElementById('groupLaunchBtn').textContent`), 'Stop all');
+  await shot('group');
+  await run(`document.getElementById('groupLaunchBtn').click(); return 1`);
+  await sleep(1000);
+  assert.deepEqual(await run(call('get_running')), {}, 'group stopped');
+  await run(call('delete_group', { id: group.id }));
+  await run(call('remove_games', { keys: [RPC_KEY] }));
+  console.log('Rich Presence launch / group launch + stop: ok');
+
+  // Import dialog and library multi-select, UI only: nothing is added or removed.
+  if (installedCount) {
+    await run(`importFromPc(); return 1`);
+    await sleep(2500);
+    assert.ok(await run(`return document.getElementById('pickDialog').open`), 'import dialog opened');
+    await shot('import');
+    await run(`document.getElementById('pickDialog').close('cancel'); return 1`);
+  }
+  assert.equal(await run(`setSelecting(true); toggleSelected(${JSON.stringify(KEY)}); return document.getElementById('selectionCount').textContent`), '1 selected');
+  await shot('select');
+  await run(`setSelecting(false); return 1`);
+  console.log('import dialog / multi-select: ok');
+
   // Minimized: WebView2 is asked to trim memory (informational).
+  const hwnd = mainWindow(app.pid);
   const before = appMemoryMB(app.pid);
   await run(`window.__TAURI__.window.getCurrentWindow().minimize(); return 1`);
   await sleep(4000);
   console.log(`memory open: ${before}
 memory minimized: ${appMemoryMB(app.pid)}`);
   ps(`${USER32}
-[void][U.W]::ShowWindow((Get-Process -Id ${app.pid}).MainWindowHandle, 9)`);
+[void][U.W]::ShowWindow([IntPtr]${hwnd}, 9)`);
   await sleep(1500);
 
   // Remembered window position: move it, close, reopen (checked after restart).
-  const rect = windowRect(app.pid, [140, 90, 1000, 640]);
+  const rect = windowRect(hwnd, [140, 90, 1000, 640]);
 
   // Tray mode: closing the window with a game running keeps the app alive without WebView2.
   await run(call('launch_game', { key: KEY }));
@@ -202,11 +265,11 @@ memory minimized: ${appMemoryMB(app.pid)}`);
   session = await startApp();
   ({ app, run } = session);
   await sleep(1000);
-  assert.equal(windowRect(app.pid), rect, 'window position and size restored');
+  assert.equal(windowRect(mainWindow(app.pid)), rect, 'window position and size restored');
   console.log('window position remembered: ok');
-  await run(call('remove_game', { key: KEY }));
+  await run(call('remove_games', { keys: [KEY] }));
   assert.ok(!(await run(call('get_library'))).some((g) => g.key === KEY));
-  await run(`localStorage.setItem('selectedKey', ${JSON.stringify(previousSelection ?? '')}); return 1`);
+  await run(`localStorage.setItem('view', ${JSON.stringify(previousView ?? 'discover')}); return 1`);
   assert.deepEqual(session.problems, [], 'no page errors');
   console.log('remove: ok');
   await run(`window.__TAURI__.window.getCurrentWindow().close(); return 1`).catch(() => {});

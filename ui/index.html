@@ -18,24 +18,65 @@
 
   <div class="layout">
     <aside class="sidebar">
-      <input id="libraryFilter" class="input" type="search" placeholder="Filter library" aria-label="Filter library">
       <div class="sidebar-buttons">
-        <button id="addGameBtn" class="btn">+ Add game</button>
-        <button id="launchFavoritesBtn" class="btn" title="Launch every favorite that isn’t running">&#9654; Favorites</button>
+        <button id="discoverBtn" class="btn primary">Find games</button>
+        <button id="importBtn" class="btn" title="Add games installed on this PC">Import from PC</button>
       </div>
-      <p id="libraryEmpty" class="hint" hidden>No games yet. Click “Add game” to pick one from Discord’s list.</p>
-      <ul id="library" class="library" aria-label="Your games"></ul>
+
+      <div class="sidebar-scroll">
+        <div class="section-header">
+          <h2>Groups</h2>
+          <button id="newGroupBtn" class="link-btn">+ New</button>
+        </div>
+        <p id="groupsEmpty" class="hint" hidden>Groups launch several games at once.</p>
+        <ul id="groups" class="nav-list" aria-label="Groups"></ul>
+
+        <div class="section-header">
+          <h2>Library</h2>
+          <button id="launchFavoritesBtn" class="link-btn" title="Launch every favorite that isn’t running">&#9654; Favorites</button>
+          <button id="selectBtn" class="link-btn" aria-pressed="false">Select</button>
+        </div>
+        <input id="libraryFilter" class="input small" type="search" placeholder="Filter library" aria-label="Filter library">
+        <p id="libraryEmpty" class="hint" hidden>No games yet. Use “Find games” or “Import from PC”.</p>
+        <ul id="library" class="nav-list" aria-label="Your games"></ul>
+      </div>
+
+      <div id="selectionBar" class="selection-bar" hidden>
+        <span id="selectionCount"></span>
+        <div class="selection-actions">
+          <button id="selLaunchBtn" class="btn small primary">Launch</button>
+          <button id="selStopBtn" class="btn small">Stop</button>
+          <button id="selGroupBtn" class="btn small">Add to group</button>
+          <button id="selRemoveBtn" class="btn small danger">Remove</button>
+        </div>
+      </div>
     </aside>
 
     <main class="main">
-      <section id="emptyState" class="empty-state">
-        <p>Select a game to launch it.</p>
+      <section id="discoverView" class="view" hidden>
+        <div class="discover-header">
+          <input id="catalogSearch" class="input large" type="search" placeholder="Search Discord’s game list, or paste a Discord app ID" aria-label="Search games">
+          <div class="chips" role="group" aria-label="Show">
+            <button class="chip" data-kind="all" aria-pressed="true">All</button>
+            <button class="chip" data-kind="exe" aria-pressed="false" title="Discord sees these by their exe name; best for quests">Detected by exe</button>
+            <button class="chip" data-kind="rpc" aria-pressed="false" title="No PC exe in Discord’s list; shown through Rich Presence">Rich Presence</button>
+            <button class="chip" data-kind="mobile" aria-pressed="false">Mobile</button>
+          </div>
+          <p id="listInfo" class="subtle small-text"></p>
+        </div>
+        <div id="discoverBody" class="discover-body"></div>
+        <div id="pickBar" class="pick-bar" hidden>
+          <span id="pickCount"></span>
+          <button id="pickClearBtn" class="btn">Clear</button>
+          <button id="pickAddBtn" class="btn primary">Add to library</button>
+        </div>
       </section>
 
-      <section id="details" class="details" hidden>
+      <section id="gameView" class="view details" hidden>
+        <div id="gameArt" class="hero"></div>
         <p id="status" class="status"><span class="status-dot" aria-hidden="true"></span><span id="statusText"></span> <span id="statusTime" class="status-time"></span></p>
         <h1 id="gameName" class="game-title"></h1>
-        <p id="gameExe" class="mono subtle"></p>
+        <p id="gameMode" class="subtle"></p>
 
         <div class="actions">
           <button id="launchBtn" class="btn primary large"></button>
@@ -57,9 +98,23 @@
 
         <div class="secondary-actions">
           <button id="favoriteBtn" class="btn"></button>
+          <button id="gameGroupBtn" class="btn">Add to group</button>
           <button id="shortcutBtn" class="btn">Create desktop shortcut</button>
           <button id="removeBtn" class="btn danger">Remove from library</button>
         </div>
+      </section>
+
+      <section id="groupView" class="view details" hidden>
+        <p class="status">Group <span id="groupStatus" class="status-time"></span></p>
+        <h1 id="groupName" class="game-title"></h1>
+        <div class="actions">
+          <button id="groupLaunchBtn" class="btn primary large"></button>
+          <button id="groupAddBtn" class="btn">+ Add from library</button>
+          <button id="groupRenameBtn" class="btn">Rename</button>
+          <button id="groupDeleteBtn" class="btn danger">Delete group</button>
+        </div>
+        <p id="groupEmpty" class="hint" hidden>This group is empty. Add games from your library.</p>
+        <ul id="groupGames" class="member-list"></ul>
       </section>
 
       <section class="log-panel" aria-label="Activity">
@@ -68,24 +123,51 @@
     </main>
   </div>
 
-  <dialog id="addDialog" class="dialog wide" aria-labelledby="addDialogTitle">
-    <header class="dialog-header">
-      <h2 id="addDialogTitle">Add a game</h2>
-      <form method="dialog"><button class="icon-btn" aria-label="Close">&#10005;</button></form>
-    </header>
-    <input id="catalogSearch" class="input" type="search" placeholder="Search Discord’s game list" aria-label="Search Discord’s game list">
-    <ul id="catalog" class="catalog"></ul>
-    <p id="catalogEmpty" class="hint" hidden>No games found.</p>
-  </dialog>
-
-  <dialog id="warnDialog" class="dialog" aria-labelledby="warnDialogTitle">
+  <dialog id="pickDialog" class="dialog wide" aria-labelledby="pickTitle">
     <form method="dialog">
-      <h2 id="warnDialogTitle" class="warn-title">This game may not be detected</h2>
-      <p>Discord’s list doesn’t name a Windows exe for this game, so a name based on its title will be used instead.</p>
-      <p class="subtle">Discord might not count it for quests.</p>
+      <h2 id="pickTitle"></h2>
+      <p id="pickHint" class="subtle"></p>
+      <div class="pick-tools">
+        <button type="button" id="pickAllBtn" class="link-btn">Select all</button>
+        <button type="button" id="pickNoneBtn" class="link-btn">Select none</button>
+      </div>
+      <ul id="pickList" class="pick-list"></ul>
       <div class="dialog-buttons">
         <button value="cancel" class="btn">Cancel</button>
-        <button value="confirm" class="btn warn">Add anyway</button>
+        <button value="confirm" id="pickConfirmBtn" class="btn primary"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="groupDialog" class="dialog" aria-labelledby="groupDialogTitle">
+    <form method="dialog">
+      <h2 id="groupDialogTitle">Add to group</h2>
+      <ul id="groupChoices" class="group-choices"></ul>
+      <div class="dialog-buttons">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="new" class="btn primary">New group…</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="nameDialog" class="dialog" aria-labelledby="nameTitle">
+    <form method="dialog">
+      <h2 id="nameTitle"></h2>
+      <input id="nameInput" class="input" maxlength="60" placeholder="e.g. Quest grind" aria-labelledby="nameTitle">
+      <div class="dialog-buttons">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="confirm" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="dialog" aria-labelledby="confirmTitle">
+    <form method="dialog">
+      <h2 id="confirmTitle"></h2>
+      <p id="confirmText"></p>
+      <div class="dialog-buttons">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="confirm" id="confirmBtn" class="btn danger-solid"></button>
       </div>
     </form>
   </dialog>

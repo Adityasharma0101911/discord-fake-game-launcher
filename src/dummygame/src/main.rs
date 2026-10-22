@@ -1,17 +1,22 @@
 // Fake game process: Discord detects it by its exe name/path, so all it does is show a window.
 // It gets copied and renamed to the real game's exe (e.g. games/<appId>/win64/cs2.exe).
-// Usage: <exe> "<display name>" [minutes until it closes itself]
-#![windows_subsystem = "windows"]
+// Usage: <exe> "<display name>" [minutes until it closes itself] [--rpc=<discord application id>]
+// --rpc is for games without a Windows exe: the game is shown through Rich Presence over Discord's local IPC pipe.
+// Debug builds keep a console so the IPC traffic printed by log_frame is visible.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::fs::OpenOptions;
+use std::io::{self, Read, Write};
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-static NAME: OnceLock<String> = OnceLock::new();
+// The fixed part of the window text (name + mode lines); the countdown is appended on each paint.
+static HEAD: OnceLock<String> = OnceLock::new();
 static DEADLINE: OnceLock<Option<Instant>> = OnceLock::new();
 
 fn wide(s: &str) -> Vec<u16> {
@@ -23,25 +28,131 @@ fn deadline() -> Option<Instant> {
 }
 
 fn label() -> Vec<u16> {
-    let name = NAME.get().unwrap();
+    let head = HEAD.get().unwrap();
     match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(Instant::now()).as_secs();
-            wide(&format!("{name} (fake process for Discord)\ncloses in {}:{:02}", left / 60, left % 60))
+            wide(&format!("{head}\ncloses in {}:{:02}", left / 60, left % 60))
         }
-        None => wide(&format!("{name} (fake process for Discord)")),
+        None => wide(head),
+    }
+}
+
+// Same contract as the old .NET DummyGame: argv[1] is the display name. After it, in any order:
+// a positive number (minutes until auto-close) and --rpc=<id> (ignored unless 1..=25 ASCII digits).
+fn parse_args(args: Vec<String>) -> (String, Option<f64>, Option<String>) {
+    let mut args = args.into_iter();
+    let name = args.next().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "Game".into());
+    let (mut minutes, mut rpc) = (None, None);
+    for a in args {
+        if let Some(id) = a.strip_prefix("--rpc=") {
+            if (1..=25).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit()) {
+                rpc = Some(id.to_string());
+            }
+        } else if let Some(m) = a.parse::<f64>().ok().filter(|m| *m > 0.0) {
+            minutes = Some(m);
+        }
+    }
+    (name, minutes, rpc)
+}
+
+// Discord IPC frame: LE u32 opcode, LE u32 payload length, UTF-8 JSON.
+fn frame(op: u32, json: &str) -> Vec<u8> {
+    let mut f = Vec::with_capacity(8 + json.len());
+    f.extend_from_slice(&op.to_le_bytes());
+    f.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    f.extend_from_slice(json.as_bytes());
+    f
+}
+
+// Reads frames until a normal one (opcode 1) arrives and returns its JSON. Answers PING, fails on CLOSE.
+fn next_frame<P: Read + Write>(pipe: &mut P) -> io::Result<String> {
+    loop {
+        let mut h = [0u8; 8];
+        pipe.read_exact(&mut h)?;
+        let op = u32::from_le_bytes([h[0], h[1], h[2], h[3]]);
+        let len = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
+        if len > 1 << 20 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "IPC frame too large"));
+        }
+        let mut buf = vec![0; len];
+        pipe.read_exact(&mut buf)?;
+        let json = String::from_utf8_lossy(&buf).into_owned();
+        if cfg!(debug_assertions) {
+            log_frame(op, &json);
+        }
+        match op {
+            1 => return Ok(json),
+            2 => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "Discord closed the IPC connection")),
+            3 => pipe.write_all(&frame(4, &json))?,
+            _ => {}
+        }
+    }
+}
+
+// Debug only. Never print whole payloads: READY carries the user's account (username, id, avatar).
+fn log_frame(op: u32, json: &str) {
+    // Naive "key":value lookup, good enough for a debug line.
+    let field = |key: &str| {
+        let pat = format!("\"{key}\":");
+        let Some(i) = json.find(&pat) else { return "-" };
+        let v = json[i + pat.len()..].trim_start();
+        match v.strip_prefix('"') {
+            Some(s) => &s[..s.find('"').unwrap_or(s.len())],
+            None => &v[..v.find([',', '}']).unwrap_or(v.len())],
+        }
+    };
+    let cmd = field("cmd");
+    if cmd == "SET_ACTIVITY" {
+        eprintln!("ipc op={op} cmd={cmd} evt={} name={} application_id={}", field("evt"), field("name"), field("application_id"));
+    } else if op == 2 {
+        eprintln!("ipc op=2 code={} message={}", field("code"), field("message"));
+    } else {
+        eprintln!("ipc op={op} cmd={cmd} evt={}", field("evt"));
+    }
+}
+
+fn rpc_session(id: &str, start_ms: u128) -> io::Result<()> {
+    let mut pipe = (0..10)
+        .find_map(|i| OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no Discord IPC pipe (Discord not running?)"))?;
+    pipe.write_all(&frame(0, &format!(r#"{{"v":1,"client_id":"{id}"}}"#)))?;
+    while !next_frame(&mut pipe)?.contains(r#""evt":"READY""#) {}
+    let pid = std::process::id();
+    let activity = format!(
+        r#"{{"cmd":"SET_ACTIVITY","nonce":"1","args":{{"pid":{pid},"activity":{{"type":0,"timestamps":{{"start":{start_ms}}}}}}}}}"#
+    );
+    pipe.write_all(&frame(1, &activity))?;
+    // Nothing else to send; reading only notices Discord quitting/restarting so we can reconnect.
+    loop {
+        next_frame(&mut pipe)?;
+    }
+}
+
+// Runs on its own thread forever; the process still exits when main returns (ExitProcess kills it).
+fn rpc_loop(id: String, start_ms: u128) {
+    loop {
+        let e = rpc_session(&id, start_ms).unwrap_err();
+        if cfg!(debug_assertions) {
+            eprintln!("rpc: {e}; retrying in 5 s");
+        }
+        std::thread::sleep(Duration::from_secs(5));
     }
 }
 
 fn main() {
-    // Same contract as the old .NET DummyGame: argv[1] is the display name.
-    let mut args = std::env::args().skip(1);
-    let name = args.next().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| "Game".into());
-    let minutes = args.next().and_then(|m| m.parse::<f64>().ok()).filter(|m| *m > 0.0);
+    let (name, minutes, rpc) = parse_args(std::env::args().skip(1).collect());
     let at = minutes
         .and_then(|m| Duration::try_from_secs_f64(m * 60.0).ok())
         .and_then(|d| Instant::now().checked_add(d));
-    NAME.get_or_init(|| name.clone());
+    let mut head = format!("{name} (fake process for Discord)");
+    if let Some(id) = rpc {
+        head.push_str("\nshown in Discord through Rich Presence");
+        // Fixed once so Discord's elapsed timer survives reconnects.
+        let start_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        std::thread::spawn(move || rpc_loop(id, start_ms));
+    }
+    HEAD.get_or_init(|| head);
     DEADLINE.get_or_init(|| at);
     let title = wide(&name);
     let class = wide("DummyGame");
@@ -99,7 +210,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let old = SelectObject(hdc, font);
             SetBkMode(hdc, TRANSPARENT as _);
             SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
-            // Measure the (possibly two-line) text first so it can be centered vertically.
+            // Measure the (possibly multi-line) text first so it can be centered vertically.
             let text = label();
             let mut measured = rc;
             DrawTextW(hdc, text.as_ptr(), -1, &mut measured, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
@@ -122,5 +233,52 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> (String, Option<f64>, Option<String>) {
+        parse_args(a.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn parses_args() {
+        assert_eq!(args(&[]), ("Game".into(), None, None));
+        assert_eq!(args(&["CS2", "30"]), ("CS2".into(), Some(30.0), None));
+        assert_eq!(args(&["RoK", "--rpc=1441992604911665204", "0.5"]), ("RoK".into(), Some(0.5), Some("1441992604911665204".into())));
+        assert_eq!(args(&["RoK", "0.5", "--rpc=1441992604911665204"]), ("RoK".into(), Some(0.5), Some("1441992604911665204".into())));
+        assert_eq!(args(&["X", "--rpc=12a", "--rpc=", "-3"]), ("X".into(), None, None));
+        assert_eq!(args(&["X", &format!("--rpc={}", "1".repeat(26))]), ("X".into(), None, None));
+    }
+
+    // Fake pipe: reads from `0`, collects writes in `1`.
+    struct Pipe(io::Cursor<Vec<u8>>, Vec<u8>);
+    impl Read for Pipe {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.0.read(b)
+        }
+    }
+    impl Write for Pipe {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.1.write(b)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn encodes_and_reads_frames() {
+        assert_eq!(frame(1, "{}"), [1, 0, 0, 0, 2, 0, 0, 0, b'{', b'}']);
+        // A PING is answered with a PONG carrying the same payload, then the opcode 1 frame is returned.
+        let mut pipe = Pipe(io::Cursor::new([frame(3, "p"), frame(1, "{\"a\":1}")].concat()), vec![]);
+        assert_eq!(next_frame(&mut pipe).unwrap(), "{\"a\":1}");
+        assert_eq!(pipe.1, frame(4, "p"));
+        // CLOSE and EOF are errors (both mean reconnect).
+        assert!(next_frame(&mut Pipe(io::Cursor::new(frame(2, "{}")), vec![])).is_err());
+        assert!(next_frame(&mut pipe).is_err());
     }
 }
