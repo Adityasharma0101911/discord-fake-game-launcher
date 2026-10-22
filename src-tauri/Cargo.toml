@@ -1,0 +1,29 @@
+[package]
+name = "endos-discord-game-spoofer"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-updater = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same reqwest/rustls(ring) setup as tauri-plugin-updater, so one TLS stack is compiled in.
+reqwest = { version = "0.13", default-features = false, features = ["json", "gzip", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+mslnk = "0.1"
+# Versions match what Tauri already uses on Windows, so nothing extra is compiled.
+webview2-com = "0.39"
+windows-core = "0.62"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

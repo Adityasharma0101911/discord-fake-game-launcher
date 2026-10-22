@@ -1,0 +1,26 @@
+name: Feature idea
+description: Suggest something new or a change
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and how you’d use it.
+      placeholder: |
+        A hotkey that stops every running game.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What’s slow, missing or annoying today?
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, sketches or apps that do it well.

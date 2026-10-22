@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Endo’s Discord Game Spoofer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="titlebar" data-tauri-drag-region>
+    <span class="titlebar-name" data-tauri-drag-region>Endo’s Discord Game Spoofer</span>
+    <span id="discordWarning" class="titlebar-warning" hidden>Discord isn’t running — it won’t see your games</span>
+    <div class="titlebar-buttons">
+      <button id="minimizeBtn" class="titlebar-btn" aria-label="Minimize">&#8212;</button>
+      <button id="closeBtn" class="titlebar-btn close" aria-label="Close">&#10005;</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <input id="libraryFilter" class="input" type="search" placeholder="Filter library" aria-label="Filter library">
+      <div class="sidebar-buttons">
+        <button id="addGameBtn" class="btn">+ Add game</button>
+        <button id="launchFavoritesBtn" class="btn" title="Launch every favorite that isn’t running">&#9654; Favorites</button>
+      </div>
+      <p id="libraryEmpty" class="hint" hidden>No games yet. Click “Add game” to pick one from Discord’s list.</p>
+      <ul id="library" class="library" aria-label="Your games"></ul>
+    </aside>
+
+    <main class="main">
+      <section id="emptyState" class="empty-state">
+        <p>Select a game to launch it.</p>
+      </section>
+
+      <section id="details" class="details" hidden>
+        <p id="status" class="status"><span class="status-dot" aria-hidden="true"></span><span id="statusText"></span> <span id="statusTime" class="status-time"></span></p>
+        <h1 id="gameName" class="game-title"></h1>
+        <p id="gameExe" class="mono subtle"></p>
+
+        <div class="actions">
+          <button id="launchBtn" class="btn primary large"></button>
+          <label class="auto-stop">Auto-stop
+            <select id="autoStop">
+              <option value="0">Off</option>
+              <option value="15">after 15 min</option>
+              <option value="30">after 30 min</option>
+              <option value="45">after 45 min</option>
+              <option value="60">after 1 hour</option>
+            </select>
+          </label>
+        </div>
+
+        <dl class="facts">
+          <div><dt>App ID</dt><dd id="appId" class="mono"></dd></div>
+          <div><dt>Executable</dt><dd id="factExe" class="mono"></dd></div>
+        </dl>
+
+        <div class="secondary-actions">
+          <button id="favoriteBtn" class="btn"></button>
+          <button id="shortcutBtn" class="btn">Create desktop shortcut</button>
+          <button id="removeBtn" class="btn danger">Remove from library</button>
+        </div>
+      </section>
+
+      <section class="log-panel" aria-label="Activity">
+        <ol id="log" class="log" aria-live="polite"></ol>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="addDialog" class="dialog wide" aria-labelledby="addDialogTitle">
+    <header class="dialog-header">
+      <h2 id="addDialogTitle">Add a game</h2>
+      <form method="dialog"><button class="icon-btn" aria-label="Close">&#10005;</button></form>
+    </header>
+    <input id="catalogSearch" class="input" type="search" placeholder="Search Discord’s game list" aria-label="Search Discord’s game list">
+    <ul id="catalog" class="catalog"></ul>
+    <p id="catalogEmpty" class="hint" hidden>No games found.</p>
+  </dialog>
+
+  <dialog id="warnDialog" class="dialog" aria-labelledby="warnDialogTitle">
+    <form method="dialog">
+      <h2 id="warnDialogTitle" class="warn-title">This game may not be detected</h2>
+      <p>Discord’s list doesn’t name a Windows exe for this game, so a name based on its title will be used instead.</p>
+      <p class="subtle">Discord might not count it for quests.</p>
+      <div class="dialog-buttons">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="confirm" class="btn warn">Add anyway</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="updateDialog" class="dialog wide" aria-labelledby="updateDialogTitle">
+    <h2 id="updateDialogTitle">Update available</h2>
+    <p id="updateVersion" class="subtle"></p>
+    <pre id="updateNotes" class="update-notes"></pre>
+    <div id="updateProgressWrap" hidden>
+      <progress id="updateProgress" max="100" value="0"></progress>
+      <p id="updateProgressText" class="subtle"></p>
+    </div>
+    <div class="dialog-buttons">
+      <button id="updateLaterBtn" class="btn">Later</button>
+      <button id="updateInstallBtn" class="btn primary">Install update</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
