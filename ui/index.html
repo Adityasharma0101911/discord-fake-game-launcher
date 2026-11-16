@@ -135,10 +135,12 @@
             <label>Second line <input name="state" class="input" minlength="2" maxlength="128"></label>
             <label>Top line link <input name="detailsUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>
             <label>Second line link <input name="stateUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>
-            <label>Big image link <input name="largeImage" class="input" type="url" pattern="https?://.+" maxlength="300" placeholder="https://… (optional)"></label>
+            <label>Big image (https link, or one of the app’s own image names) <input name="largeImage" class="input" list="assetNames" maxlength="300"></label>
             <label>Big image hover text <input name="largeText" class="input" minlength="2" maxlength="128"></label>
-            <label>Small image link <input name="smallImage" class="input" type="url" pattern="https?://.+" maxlength="300" placeholder="https://… (optional)"></label>
+            <label>Small image (link or image name) <input name="smallImage" class="input" list="assetNames" maxlength="300"></label>
             <label>Small image hover text <input name="smallText" class="input" minlength="2" maxlength="128"></label>
+            <label>App name (optional: shown instead of the real name, to pose as any app) <input name="appName" class="input" maxlength="128"></label>
+            <datalist id="assetNames"></datalist>
             <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, and friends who ask get no answer.</label>
           </div>
           <div class="secondary-actions">

@@ -239,6 +239,11 @@ function renderGame() {
     const example = presenceExample(game);
     const last = { ...example.base, ...example.stages.at(-1)[1] };
     for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = last[input.name] ?? '';
+    // The app's own image names, offered as suggestions in the two image fields.
+    $('assetNames').replaceChildren();
+    invoke('app_assets', { id: game.appId }).then((names) => {
+      if (form.dataset.key === game.key) $('assetNames').replaceChildren(...names.map((n) => Object.assign(el('option'), { value: n })));
+    }, () => {});
     $('presenceStages').replaceChildren(...example.stages.map(([label, stage]) => {
       const button = el('button', 'btn small', label);
       button.type = 'button';
@@ -260,7 +265,36 @@ function renderGame() {
 // `play` drives auto-play: the stages before the match with [min, max] seconds, then a match whose `score` lines
 // ({a}/{b} score, {left} players left, {k}/{d}/{as} kills, deaths, assists) replace the match stage's second line.
 const ROUNDS = { kind: 'rounds', won: 'Victory • {a} - {b}', lost: 'Defeat • {a} - {b}' };
+// Apps are matched by their Discord app id (`ids`); image names are ones those apps have uploaded to Discord.
+// `steady` keeps one timer running across the stages, like an editor that has been open all day.
+const editor = (id, file, where, large, small) => ({ ids: [id], base: { state: where, largeImage: large, ...(small && { smallImage: small }) }, stages: [
+  ['Editing', { details: `Editing ${file}` }],
+  ['Debugging', { details: `Debugging ${file}` }],
+  ['Idle', { details: 'Idling' }]
+], play: { steady: true, pre: [['Editing', 900, 2400], ['Debugging', 120, 600], ['Idle', 60, 300]] } });
+const media = (id, activityType, title, line, large, play = 'play', pause = 'pause') => ({ ids: [id], base: { activityType, details: title, state: line, largeImage: large }, stages: [
+  ['Playing', { smallImage: play, smallText: 'Playing', timer: 'reset' }],
+  ['Paused', { smallImage: pause, smallText: 'Paused' }]
+], play: { pre: [['Playing', 1200, 2700], ['Paused', 30, 120]] } });
 const PRESENCE_EXAMPLES = [
+  editor('383226320970055681', 'main.rs', 'Workspace: my-project', 'rust', 'vscode'),
+  editor('384215522050572288', 'Main.kt', 'Project: my-app', 'kotlin'),
+  editor('551675228691103796', 'Program.cs', 'Solution: MyApp', 'csharp'),
+  editor('793271441293967371', 'init.lua', 'Workspace: dotfiles', 'lua', 'neovim'),
+  editor('389368374645227520', 'main.rs', 'Project: my-project', 'lang-rust'),
+  editor('1263505205522337886', 'main.rs', 'Project: my-project', 'logo'),
+  editor('700358131481444403', 'ContentView.swift', 'Project: MyApp', 'swift', 'xcode'),
+  editor('509465267630374935', 'PlayerController.cs', 'Project: My Game', 'logo'),
+  editor('607587875122446359', 'a pull request', 'Repository: my-project', 'lg'),
+  media('463097721130188830', 3, 'A video you’d never admit to', 'Some Channel', 'yt_lg'),
+  media('463151177836658699', 2, 'Song title', 'Artist', 'ytm_lg'),
+  media('499981204045430784', 3, 'Stranger Things', 'Season 4 • Episode 9', 'nflix_lg'),
+  media('705139844883677224', 3, 'The Boys', 'Season 4 • Episode 8', 'pvid', 'playing', 'paused'),
+  media('630236276829716483', 3, 'The Mandalorian', 'Season 3 • Episode 8', 'disneyplus-logo'),
+  media('608065709741965327', 3, 'One Piece', 'Episode 1071', 'lg'),
+  media('802958789555781663', 3, 'Stream title', 'Streamer', 'twitch'),
+  media('802958833214423081', 2, 'Song title', 'Artist', 'soundcloud'),
+  media('721748388143562852', 3, 'movie.mkv', 'Now playing', 'vlc'),
   { match: 'valorant', base: { partySize: 5, partyMax: 5, smallText: 'Jett • Radiant' }, stages: [
     ['In lobby', { details: 'Competitive', state: 'In Lobby', partySize: 2 }],
     ['In queue', { details: 'Competitive', state: 'In Queue' }],
@@ -388,7 +422,7 @@ function sessionPlan(example, keep) {
     total += seconds;
   };
   while (total < 4 * 3600) {
-    for (const [label, min, max] of example.play.pre) add({ ...stage(label), timer: 'reset' }, rand([min, max]));
+    for (const [label, min, max] of example.play.pre) add({ ...stage(label), timer: example.play.steady ? '' : 'reset' }, rand([min, max]));
     const { score } = example.play;
     if (!score) continue;
     const match = stage(score.stage);
@@ -414,8 +448,8 @@ function bumpScore(side) {
 
 // The fields a stage or auto-play step doesn't set, kept from the form.
 function keptFields() {
-  const { largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin } = readPresence();
-  return { largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin };
+  const { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin } = readPresence();
+  return { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin };
 }
 
 async function toggleAutoplay(game) {
@@ -443,7 +477,8 @@ async function toggleAutoplay(game) {
   render();
 }
 
-const presenceExample = (game) => PRESENCE_EXAMPLES.find((e) => game.name.toLowerCase().includes(e.match));
+const presenceExample = (game) =>
+  PRESENCE_EXAMPLES.find((e) => (e.ids ? e.ids.includes(game.appId) : game.name.toLowerCase().includes(e.match)));
 
 function fillPresence(presence = {}) {
   for (const input of $('presenceForm').elements) {
@@ -820,7 +855,7 @@ async function loadDiscover() {
     state.discover = await invoke('discover');
   } catch (e) {
     log(`Couldn’t load popular games: ${e}`, 'error');
-    state.discover = { mostPlayed: [], topRated: [], beyondSteam: [], mobile: [], count: 0 };
+    state.discover = { mostPlayed: [], topRated: [], beyondSteam: [], mobile: [], apps: [], count: 0 };
   }
   discoverLoading = false;
   const d = state.discover;
@@ -836,7 +871,8 @@ function renderShelves() {
     ['Most played on Steam right now', d.mostPlayed],
     ['Top rated on Steam', d.topRated],
     ['Popular beyond Steam', d.beyondSteam],
-    ['Mobile games', d.mobile]
+    ['Mobile games', d.mobile],
+    ['Apps with a Discord status (editors, video, music)', d.apps]
   ].filter(([, cards]) => cards.length);
   if (!shelves.length) {
     $('discoverBody').replaceChildren(el('p', 'hint', 'Couldn’t load popular games right now. Search still works.'));

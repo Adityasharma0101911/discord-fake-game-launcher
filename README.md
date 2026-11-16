@@ -27,6 +27,9 @@ shows the game in your status, which also counts toward Discord Quests.
   few seconds.
 - **Auto-play:** goes lobby → queue → agent select → match by itself, with the score changing round by round,
   then queues again. It keeps going with the window closed and ends when the game stops.
+- **Apps, not only games:** a shelf of popular Rich Presence apps (VS Code, JetBrains, Visual Studio, Neovim,
+  YouTube, Netflix, Twitch, Crunchyroll…) with ready-made statuses like “Editing main.rs · Workspace: my-project”.
+  The image fields suggest each app’s own image names, and an optional app name makes any app pose as your own.
 - **Groups:** save sets of games and launch or stop them together.
 - **Multi-select:** pick several games to add at once, or launch, stop, group or remove several library games.
 - Favorites, auto-stop after 15–60 minutes, play time, desktop shortcuts and a warning when Discord isn’t running.

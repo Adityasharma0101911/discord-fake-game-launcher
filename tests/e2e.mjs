@@ -140,6 +140,9 @@ try {
 
   const d = await run(call('discover'));
   assert.ok(d.beyondSteam.some((c) => c.game.name === 'VALORANT'));
+  const code = d.apps.find((c) => c.game.name === 'Visual Studio Code').game;
+  assert.ok(code.rpc && (await run(call('app_assets', { id: code.id }))).includes('vscode'), 'apps shelf and image names');
+  assert.equal(await run(`return presenceExample({ appId: ${JSON.stringify(code.id)}, name: 'x' }).stages[0][0]`), 'Editing');
   console.log(`discover: ${d.mostPlayed.length} most played, ${d.topRated.length} top rated, ${d.beyondSteam.length} beyond Steam, ${d.mobile.length} mobile, ${d.count} in Discord's list`);
   const installedCount = (await run(call('scan_installed'))).length;
   console.log(`import from PC: ${installedCount} installed games found in Discord's list`);

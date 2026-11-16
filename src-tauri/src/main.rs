@@ -31,6 +31,29 @@ const DUMMY_EXE: &[u8] = include_bytes!(env!("DUMMY_EXE"));
 // Bump when the index format changes: the next start then downloads the list again instead of trusting its ETag.
 const INDEX_VERSION: u32 = 2;
 const POPULAR_MAX_AGE_MS: u64 = 6 * 60 * 60 * 1000;
+// Discord app ids of popular Rich Presence plugins (not in the detectable list), shown as the "Apps" shelf:
+// VS Code, JetBrains IDE, Visual Studio, Neovim, Sublime Text, Zed, Xcode, Unity, GitHub, YouTube, YouTube Music,
+// Netflix, Prime Video, Disney+, Crunchyroll, Twitch, SoundCloud, VLC.
+const APPS: &[&str] = &[
+    "383226320970055681",
+    "384215522050572288",
+    "551675228691103796",
+    "793271441293967371",
+    "389368374645227520",
+    "1263505205522337886",
+    "700358131481444403",
+    "509465267630374935",
+    "607587875122446359",
+    "463097721130188830",
+    "463151177836658699",
+    "499981204045430784",
+    "705139844883677224",
+    "630236276829716483",
+    "608065709741965327",
+    "802958789555781663",
+    "802958833214423081",
+    "721748388143562852",
+];
 // Hand-picked by their name in Discord's list: there is no keyless popularity data outside Steam.
 const BEYOND_STEAM: &[&str] = &[
     "VALORANT",
@@ -208,6 +231,8 @@ struct Popular {
     most_played: Vec<(String, u64)>,
     /// Steam app ids with (positive, negative) review counts, from SteamSpy's top 100 of the last two weeks.
     rated: Vec<(String, u64, u64)>,
+    /// The `APPS` that have been looked up on Discord.
+    apps: Vec<DbGame>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -235,6 +260,8 @@ struct MyGame {
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 struct Presence {
+    /// Replaces the app's own name in the status, so one app id can pose as any app.
+    app_name: String,
     /// Discord activity type: 0 Playing, 2 Listening to, 3 Watching, 5 Competing in.
     activity_type: u8,
     details: String,
@@ -560,6 +587,7 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
         ("size", (p.party_max > 0 && p.party_size <= p.party_max).then(|| json!([p.party_size, p.party_max]))),
     ]);
     let mut activity = pick(vec![
+        ("name", fit(&p.app_name, 1, 128)),
         ("type", (!p.ask_to_join && [2, 3, 5].contains(&p.activity_type)).then(|| json!(p.activity_type))),
         ("details", fit(&p.details, 2, 128)),
         ("details_url", link(&p.details_url)),
@@ -784,7 +812,22 @@ async fn fetch_popular(mut popular: Popular) -> Popular {
     if fetched {
         popular.fetched_at = now_ms();
     }
+    // Looked up once: an app's name and icon rarely change.
+    for id in APPS {
+        if !popular.apps.iter().any(|a| a.id == *id) {
+            if let Ok(v) = get_json(&client, &format!("{DISCORD_APP_URL}/{id}/rpc")).await {
+                popular.apps.push(app_entry(id, &v));
+            }
+        }
+    }
     popular
+}
+
+/// A Rich Presence entry from Discord's public info about an app.
+fn app_entry(id: &str, v: &Value) -> DbGame {
+    let name = v["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("App").to_string();
+    let hash = |key: &str| v[key].as_str().filter(|h| !h.is_empty()).map(String::from);
+    DbGame { exe: fallback_exe_name(&name), rpc: true, icon: hash("icon"), cover: hash("cover_image"), name, id: id.into(), ..Default::default() }
 }
 
 fn short_number(n: u64) -> String {
@@ -873,7 +916,7 @@ fn search_games(
 #[tauri::command]
 async fn discover(app: AppHandle) -> Result<Value, String> {
     let cached = with_popular(&app, Popular::clone);
-    if cached.fetched_at + POPULAR_MAX_AGE_MS < now_ms() {
+    if cached.fetched_at + POPULAR_MAX_AGE_MS < now_ms() || cached.apps.len() < APPS.len() {
         let fresh = fetch_popular(cached).await;
         let _ = write_json(&app, "popular.json", &fresh);
         *app.state::<AppState>().popular.lock().unwrap() = Some(fresh);
@@ -903,7 +946,13 @@ async fn discover(app: AppHandle) -> Result<Value, String> {
         };
         let beyond_steam = named(BEYOND_STEAM);
         let mobile = named(MOBILE);
+        let apps: Vec<Value> = APPS
+            .iter()
+            .filter_map(|id| popular.apps.iter().find(|a| a.id == *id))
+            .map(|game| json!({ "game": game, "note": null }))
+            .collect();
         json!({
+            "apps": apps,
             "mostPlayed": most_played,
             "topRated": top_rated,
             "beyondSteam": beyond_steam,
@@ -927,10 +976,17 @@ async fn lookup_app(app: AppHandle, id: String) -> Result<DbGame, String> {
     if !res.status().is_success() {
         return Err(format!("Discord has no app with id {id}."));
     }
-    let v: Value = res.json().await.map_err(err)?;
-    let name = v["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("App").to_string();
-    let hash = |key: &str| v[key].as_str().filter(|h| !h.is_empty()).map(String::from);
-    Ok(DbGame { exe: fallback_exe_name(&name), rpc: true, icon: hash("icon"), cover: hash("cover_image"), name, id, ..Default::default() })
+    Ok(app_entry(&id, &res.json().await.map_err(err)?))
+}
+
+/// The names of the images an app has uploaded to Discord; each can be used as a status image.
+#[tauri::command]
+async fn app_assets(id: String) -> Result<Vec<String>, String> {
+    if !is_app_id(&id) {
+        return Ok(Vec::new());
+    }
+    let v = get_json(&http(), &format!("https://discord.com/api/v9/oauth2/applications/{id}/assets")).await.map_err(err)?;
+    Ok(v.as_array().into_iter().flatten().filter_map(|a| a["name"].as_str().map(String::from)).collect())
 }
 
 /// Games installed on this PC (Steam, Epic, Windows' installed apps) that are in Discord's list.
@@ -1309,6 +1365,7 @@ fn main() {
             add_games,
             toggle_favorite,
             set_presence,
+            app_assets,
             play_presence,
             get_autoplay,
             remove_games,
@@ -1437,6 +1494,8 @@ mod tests {
 
     #[test]
     fn custom_status_keeps_only_fields_discord_accepts() {
+        let named = Presence { app_name: " My App ".into(), large_image: "rust".into(), ..Default::default() };
+        assert_eq!(presence_activity(&named, 1000), json!({ "name": "My App", "assets": { "large_image": "rust" } }));
         let p = Presence {
             activity_type: 5,
             details: " Competitive • Ascent ".into(),
