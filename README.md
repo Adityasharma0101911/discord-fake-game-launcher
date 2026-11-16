@@ -23,7 +23,8 @@ shows the game in your status, which also counts toward Discord Quests.
 - **Custom Discord status:** give any game extra lines like the mode, map and score (“Competing in VALORANT ·
   Competitive • Ascent · In Match • 12 - 3 (5 of 5)”), with party size and image links. There are examples for
   popular games with one-click stages (in lobby, in queue, agent select, in match), +1 score buttons, clickable
-  lines, an “Ask to Join” button and timers that restart or count down; a running game picks up changes within a
+  lines, an “Ask to Join” button and timers that restart, count down or are locked to start at a set time (e.g. always
+  27 hours in); a running game picks up changes within a
   few seconds.
 - **Auto-play:** goes lobby → queue → agent select → match by itself, with the score changing round by round,
   then queues again with a different map and agent (editors rotate files and languages). It keeps going with the

@@ -295,7 +295,8 @@ struct Presence {
     large_text: String,
     small_image: String,
     small_text: String,
-    /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`.
+    /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`,
+    /// "ago" counts up starting at `timer_minutes`.
     timer: String,
     timer_minutes: u32,
     /// Up to two link buttons under the status. Discord refuses them together with Ask to Join.
@@ -635,6 +636,8 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
             match p.timer.as_str() {
                 "reset" => Some(json!({ "start": now })),
                 "left" if p.timer_minutes > 0 => Some(json!({ "end": now + u64::from(p.timer_minutes) * 60_000 })),
+                // Locked: every launch and save shows this much time already played, then counts on.
+                "ago" if p.timer_minutes > 0 => Some(json!({ "start": now.saturating_sub(u64::from(p.timer_minutes) * 60_000) })),
                 _ => None,
             },
         ),
@@ -1668,6 +1671,8 @@ mod tests {
             presence_activity(&named, 1000),
             json!({ "name": "My App", "buttons": [{ "label": "View Repository", "url": "https://github.com/me/app" }], "assets": { "large_image": "rust" } })
         );
+        let locked = Presence { timer: "ago".into(), timer_minutes: 90, ..Default::default() };
+        assert_eq!(presence_activity(&locked, 6_000_000), json!({ "timestamps": { "start": 600_000 } }));
         // Discord refuses buttons together with Ask to Join.
         assert!(presence_activity(&Presence { ask_to_join: true, ..named }, 1000).get("buttons").is_none());
         let p = Presence {
