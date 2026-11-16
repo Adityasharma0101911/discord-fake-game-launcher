@@ -296,9 +296,12 @@ struct Presence {
     small_image: String,
     small_text: String,
     /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`,
-    /// "ago" counts up starting at `timer_minutes`.
+    /// "ago" counts up starting at `timer_minutes` on every launch and save, "from" started at `timer_minutes` when it
+    /// was first saved and has counted on since, also while the game is stopped.
     timer: String,
     timer_minutes: u32,
+    /// For "from": when the clock reads zero, in ms. Set when the status is saved.
+    timer_start: u64,
     /// Up to two link buttons under the status. Discord refuses them together with Ask to Join.
     button1_label: String,
     button1_url: String,
@@ -637,6 +640,7 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
                 "reset" => Some(json!({ "start": now })),
                 "left" if p.timer_minutes > 0 => Some(json!({ "end": now + u64::from(p.timer_minutes) * 60_000 })),
                 // Locked: every launch and save shows this much time already played, then counts on.
+                "from" if p.timer_start > 0 => Some(json!({ "start": p.timer_start })),
                 "ago" if p.timer_minutes > 0 => Some(json!({ "start": now.saturating_sub(u64::from(p.timer_minutes) * 60_000) })),
                 _ => None,
             },
@@ -1162,7 +1166,15 @@ fn set_presence(app: AppHandle, state: State<'_, AppState>, key: String, presenc
     if !is_app_id(&game.app_id) {
         return Err("This game has no Discord app ID, so it can’t have a custom status.".into());
     }
-    game.presence = presence.filter(|p| *p != Presence::default());
+    game.presence = presence.filter(|p| *p != Presence::default()).map(|mut p| {
+        // "from" keeps its clock through later saves (stage buttons, score) unless the minutes change.
+        p.timer_start = match &game.presence {
+            _ if p.timer != "from" || p.timer_minutes == 0 => 0,
+            Some(old) if old.timer == "from" && old.timer_minutes == p.timer_minutes && old.timer_start > 0 => old.timer_start,
+            _ => now_ms().saturating_sub(u64::from(p.timer_minutes) * 60_000),
+        };
+        p
+    });
     let game = game.clone();
     {
         let mut autoplay = state.autoplay.lock().unwrap();
@@ -1671,6 +1683,8 @@ mod tests {
             presence_activity(&named, 1000),
             json!({ "name": "My App", "buttons": [{ "label": "View Repository", "url": "https://github.com/me/app" }], "assets": { "large_image": "rust" } })
         );
+        let from = Presence { timer: "from".into(), timer_minutes: 90, timer_start: 1234, ..Default::default() };
+        assert_eq!(presence_activity(&from, 6_000_000), json!({ "timestamps": { "start": 1234 } }));
         let locked = Presence { timer: "ago".into(), timer_minutes: 90, ..Default::default() };
         assert_eq!(presence_activity(&locked, 6_000_000), json!({ "timestamps": { "start": 600_000 } }));
         // Discord refuses buttons together with Ask to Join.

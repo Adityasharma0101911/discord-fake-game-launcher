@@ -130,9 +130,10 @@
                 <option value="reset">Time since this status</option>
                 <option value="left">Time left</option>
                 <option value="ago">Locked: always starts at a set time</option>
+                <option value="from">Start from a set time, then keep counting</option>
               </select>
             </label>
-            <label>Minutes (for “Time left” and “Locked”; 1,660 shows 27:40:00) <input name="timerMinutes" class="input" type="number" min="1" max="600000"></label>
+            <label>Minutes (for “Time left”, “Locked” and “Start from”; 1,660 shows 27:40:00) <input name="timerMinutes" class="input" type="number" min="1" max="600000"></label>
             <label>Top line <input name="details" class="input" minlength="2" maxlength="128"></label>
             <label>Second line <input name="state" class="input" minlength="2" maxlength="128"></label>
             <label>Top line link <input name="detailsUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>
