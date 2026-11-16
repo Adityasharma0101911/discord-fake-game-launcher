@@ -21,6 +21,7 @@
       <div class="sidebar-buttons">
         <button id="discoverBtn" class="btn primary">Find games</button>
         <button id="importBtn" class="btn" title="Add games installed on this PC">Import from PC</button>
+        <button id="settingsBtn" class="btn icon" title="Settings" aria-label="Settings">&#9881;</button>
       </div>
 
       <div class="sidebar-scroll">
@@ -140,8 +141,17 @@
             <label>Small image (link or image name) <input name="smallImage" class="input" list="assetNames" maxlength="300"></label>
             <label>Small image hover text <input name="smallText" class="input" minlength="2" maxlength="128"></label>
             <label>App name (optional: shown instead of the real name, to pose as any app) <input name="appName" class="input" maxlength="128"></label>
+            <details id="assetPicker" class="asset-picker">
+              <summary>Pick from this app’s images</summary>
+              <p class="subtle small-text">Click an image to use it in the image field you clicked last (the big one by default).</p>
+              <div id="assetGrid" class="asset-grid"></div>
+            </details>
+            <label>Button 1 text <input name="button1Label" class="input" maxlength="32" placeholder="e.g. View Repository"></label>
+            <label>Button 1 link <input name="button1Url" class="input" type="url" pattern="https?://.+" maxlength="512" placeholder="https://…"></label>
+            <label>Button 2 text <input name="button2Label" class="input" maxlength="32"></label>
+            <label>Button 2 link <input name="button2Url" class="input" type="url" pattern="https?://.+" maxlength="512" placeholder="https://…"></label>
             <datalist id="assetNames"></datalist>
-            <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, and friends who ask get no answer.</label>
+            <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, friends who ask get no answer, and it hides the two buttons above.</label>
           </div>
           <div class="secondary-actions">
             <button class="btn primary">Save status</button>
@@ -221,6 +231,45 @@
       <div class="dialog-buttons">
         <button value="cancel" class="btn">Cancel</button>
         <button value="confirm" id="confirmBtn" class="btn danger-solid"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="dialog wide" aria-labelledby="settingsTitle">
+    <form method="dialog" id="settingsForm" class="settings">
+      <h2 id="settingsTitle">Settings</h2>
+      <label class="check"><input type="checkbox" name="showAll"> Show every running game in Discord at once. Discord normally shows only one detected game; this also sends each game as a Rich Presence status. Applies to games launched from now on.</label>
+      <label class="check"><input type="checkbox" name="startWithWindows"> Start with Windows, in the tray. Right-click the tray icon to launch a group.</label>
+      <h3>Auto-play</h3>
+      <div class="settings-row">
+        <label>Rounds and matches you win (%) <input name="winRate" class="input" type="number" min="0" max="100" required></label>
+        <label>Speed
+          <select name="autoSpeed" class="input">
+            <option value="1.5">Slow</option>
+            <option value="1">Normal</option>
+            <option value="0.5">Fast</option>
+          </select>
+        </label>
+      </div>
+      <h3>Library backup</h3>
+      <div class="settings-row">
+        <button type="button" id="exportBtn" class="btn">Export to Downloads</button>
+        <button type="button" id="importFileBtn" class="btn">Import a file…</button>
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </div>
+      <details>
+        <summary>Tips for play time and badges</summary>
+        <ul class="tips">
+          <li>Play time only counts for games Discord detects by exe. Rich Presence entries (apps, mobile games) don’t count.</li>
+          <li>Discord records play time when it detects the game, every 30 minutes after that, and when the game closes, so keep Discord open.</li>
+          <li>In Discord, turn on Settings → Activity Privacy → “Share your detected activities with others”.</li>
+          <li>The game time, game variety and streaming badges also need the personalization setting on, under Settings → Data &amp; Privacy.</li>
+          <li>Discord keeps badges for up to an hour before checking again. Ctrl+R in Discord reloads it.</li>
+        </ul>
+      </details>
+      <div class="dialog-buttons">
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
+        <button value="confirm" class="btn primary">Save</button>
       </div>
     </form>
   </dialog>

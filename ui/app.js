@@ -25,6 +25,8 @@ const state = {
 // The startup sync runs in the background; searching waits for it.
 let catalogSync = Promise.resolve(false);
 let discoverLoading = false;
+// The image field a click in the image picker fills.
+let imageField = 'largeImage';
 
 // Remembered settings are only conveniences, so storage errors are ignored.
 function load(name, fallback) {
@@ -220,7 +222,7 @@ function renderGame() {
   $('gameArt').replaceChildren(cachedArt(game, 'hero'));
   $('gameName').textContent = game.name;
   $('gameMode').textContent = game.rpc
-    ? 'Shown in Discord through Rich Presence: Discord’s list has no PC exe for it. Discord may not count it for quests.'
+    ? 'Shown in Discord through Rich Presence: Discord’s list has no PC exe for it. It won’t count toward play time or badges, and may not count for quests.'
     : 'Discord detects it by its exe name.';
   $('appId').textContent = game.appId || '—';
   $('factExe').textContent = game.rpc ? 'None (Rich Presence)' : game.exe;
@@ -241,8 +243,25 @@ function renderGame() {
     for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = last[input.name] ?? '';
     // The app's own image names, offered as suggestions in the two image fields.
     $('assetNames').replaceChildren();
-    invoke('app_assets', { id: game.appId }).then((names) => {
-      if (form.dataset.key === game.key) $('assetNames').replaceChildren(...names.map((n) => Object.assign(el('option'), { value: n })));
+    $('assetGrid').replaceChildren();
+    $('assetPicker').hidden = true;
+    imageField = 'largeImage';
+    invoke('app_assets', { id: game.appId }).then((images) => {
+      if (form.dataset.key !== game.key) return;
+      $('assetNames').replaceChildren(...images.map((a) => Object.assign(el('option'), { value: a.name })));
+      $('assetPicker').hidden = !images.length;
+      $('assetGrid').replaceChildren(...images.map((a) => {
+        const button = el('button');
+        button.type = 'button';
+        button.title = a.name;
+        const img = el('img');
+        img.loading = 'lazy';
+        img.alt = a.name;
+        img.src = `https://cdn.discordapp.com/app-assets/${game.appId}/${a.id}.png?size=64`;
+        button.append(img);
+        button.onclick = () => { form.elements[imageField].value = a.name; };
+        return button;
+      }));
     }, () => {});
     $('presenceStages').replaceChildren(...example.stages.map(([label, stage]) => {
       const button = el('button', 'btn small', label);
@@ -267,25 +286,45 @@ function renderGame() {
 const ROUNDS = { kind: 'rounds', won: 'Victory • {a} - {b}', lost: 'Defeat • {a} - {b}' };
 // Apps are matched by their Discord app id (`ids`); image names are ones those apps have uploaded to Discord.
 // `steady` keeps one timer running across the stages, like an editor that has been open all day.
-const editor = (id, file, where, large, small) => ({ ids: [id], base: { state: where, largeImage: large, ...(small && { smallImage: small }) }, stages: [
-  ['Editing', { details: `Editing ${file}` }],
-  ['Debugging', { details: `Debugging ${file}` }],
+// `vary` lists what auto-play swaps each round: every group is a list of options, each option the texts that go
+// together (a file and its language image; a map). The first option is the one written in the stages.
+// `files` are [file name, image name] pairs.
+const editor = (id, where, small, files) => ({ ids: [id], base: { state: where, largeImage: files[0][1], ...(small && { smallImage: small }) }, stages: [
+  ['Editing', { details: `Editing ${files[0][0]}` }],
+  ['Debugging', { details: `Debugging ${files[0][0]}` }],
   ['Idle', { details: 'Idling' }]
-], play: { steady: true, pre: [['Editing', 900, 2400], ['Debugging', 120, 600], ['Idle', 60, 300]] } });
+], vary: [files], play: { steady: true, pre: [['Editing', 600, 1500], ['Debugging', 120, 600], ['Editing', 300, 900], ['Idle', 60, 300]] } });
+// A website or app with a few things you could be doing: [button label, top line, second line].
+const site = (id, large, pages) => ({ ids: [id], base: { ...(large && { largeImage: large }) },
+  stages: pages.map(([label, details, state = '']) => [label, { details, state }]),
+  play: { steady: true, pre: pages.map(([label]) => [label, 300, 1200]) } });
+const names = (...list) => list.map((n) => [n]);
 const media = (id, activityType, title, line, large, play = 'play', pause = 'pause') => ({ ids: [id], base: { activityType, details: title, state: line, largeImage: large }, stages: [
   ['Playing', { smallImage: play, smallText: 'Playing', timer: 'reset' }],
   ['Paused', { smallImage: pause, smallText: 'Paused' }]
 ], play: { pre: [['Playing', 1200, 2700], ['Paused', 30, 120]] } });
 const PRESENCE_EXAMPLES = [
-  editor('383226320970055681', 'main.rs', 'Workspace: my-project', 'rust', 'vscode'),
-  editor('384215522050572288', 'Main.kt', 'Project: my-app', 'kotlin'),
-  editor('551675228691103796', 'Program.cs', 'Solution: MyApp', 'csharp'),
-  editor('793271441293967371', 'init.lua', 'Workspace: dotfiles', 'lua', 'neovim'),
-  editor('389368374645227520', 'main.rs', 'Project: my-project', 'lang-rust'),
-  editor('1263505205522337886', 'main.rs', 'Project: my-project', 'logo'),
-  editor('700358131481444403', 'ContentView.swift', 'Project: MyApp', 'swift', 'xcode'),
-  editor('509465267630374935', 'PlayerController.cs', 'Project: My Game', 'logo'),
-  editor('607587875122446359', 'a pull request', 'Repository: my-project', 'lg'),
+  editor('383226320970055681', 'Workspace: my-project', 'vscode', [['main.rs', 'rust'], ['app.ts', 'ts'], ['server.py', 'python'], ['index.js', 'js'], ['config.json', 'json'], ['App.tsx', 'tsx']]),
+  editor('384215522050572288', 'Project: my-app', '', [['Main.kt', 'kotlin'], ['App.java', 'java'], ['main.py', 'python'], ['index.js', 'javascript'], ['lib.rs', 'rust']]),
+  editor('551675228691103796', 'Solution: MyApp', '', [['Program.cs', 'csharp'], ['main.cpp', 'cpp'], ['Startup.cs', 'csharp'], ['Module1.vb', 'visualbasic']]),
+  editor('793271441293967371', 'Workspace: dotfiles', 'neovim', [['init.lua', 'lua'], ['main.rs', 'rust'], ['script.py', 'python'], ['plugins.lua', 'lua']]),
+  editor('389368374645227520', 'Project: my-project', '', [['main.rs', 'lang-rust'], ['app.ts', 'lang-typescript'], ['main.py', 'lang-python'], ['index.html', 'lang-html'], ['main.go', 'lang-go']]),
+  editor('1263505205522337886', 'Project: my-project', '', [['main.rs', 'logo'], ['lib.rs', 'logo'], ['app.ts', 'logo'], ['README.md', 'logo']]),
+  editor('700358131481444403', 'Project: MyApp', 'xcode', [['ContentView.swift', 'swift'], ['AppDelegate.m', 'm'], ['Model.swift', 'swift'], ['Bridge.h', 'h']]),
+  editor('509465267630374935', 'Project: My Game', '', [['PlayerController.cs', 'logo'], ['GameManager.cs', 'logo'], ['EnemyAI.cs', 'logo']]),
+  editor('709526684428271687', 'Repository: my-project', '', [['a merge request', 'logo'], ['an issue', 'logo'], ['the pipeline', 'logo']]),
+  editor('607587875122446359', 'Repository: my-project', '', [['a pull request', 'lg'], ['an issue', 'lg'], ['the README', 'lg']]),
+  site('768942376403075073', '', [['Designing', 'Editing a design file', 'Landing page v2'], ['Prototyping', 'Building a prototype', 'Landing page v2'], ['Browsing', 'Browsing files']]),
+  site('670612134878773297', 'canva', [['Designing', 'Editing a design', 'Instagram post'], ['Browsing', 'Browsing templates']]),
+  site('1177802176140156998', 'duolingo', [['Lesson', 'Learning Spanish', '365 day streak'], ['Practice', 'Practicing to keep the streak', '365 day streak'], ['Leaderboard', 'Checking the Diamond League']]),
+  site('610123745033584651', 'lg', [['Reading', 'Reading a question', 'Why does my code work?'], ['Searching', 'Searching for an answer']]),
+  site('609364070684033044', 'lg', [['Reading', 'Reading an article', 'List of common misconceptions'], ['Searching', 'Searching Wikipedia']]),
+  site('701914032541794386', 'meetlogo', [['In a call', 'In a meeting', 'Weekly sync'], ['Presenting', 'Presenting to everyone', 'Weekly sync']]),
+  site('765876503161733140', 'zoom_logo', [['In a call', 'In a meeting', 'Weekly sync'], ['Presenting', 'Sharing the screen', 'Weekly sync']]),
+  site('846725225219489812', 'icon', [['In a call', 'In a meeting', 'Weekly sync'], ['Chatting', 'Reading the chat']]),
+  site('547436289960574977', 'logo', [['Scrolling', 'Scrolling the feed'], ['Reels', 'Watching reels'], ['Messages', 'Reading messages']]),
+  media('842112189618978897', 2, 'Song title', 'Artist', 'applemusic-logo'),
+  media('669359568391766018', 3, 'Movie night', 'Now playing', 'banner-icon'),
   media('463097721130188830', 3, 'A video you’d never admit to', 'Some Channel', 'yt_lg'),
   media('463151177836658699', 2, 'Song title', 'Artist', 'ytm_lg'),
   media('499981204045430784', 3, 'Stranger Things', 'Season 4 • Episode 9', 'nflix_lg'),
@@ -295,7 +334,7 @@ const PRESENCE_EXAMPLES = [
   media('802958789555781663', 3, 'Stream title', 'Streamer', 'twitch'),
   media('802958833214423081', 2, 'Song title', 'Artist', 'soundcloud'),
   media('721748388143562852', 3, 'movie.mkv', 'Now playing', 'vlc'),
-  { match: 'valorant', base: { partySize: 5, partyMax: 5, smallText: 'Jett • Radiant' }, stages: [
+  { match: 'valorant', vary: [names('Ascent', 'Bind', 'Haven', 'Split', 'Lotus', 'Sunset', 'Icebox', 'Pearl'), names('Jett', 'Reyna', 'Sage', 'Omen', 'Sova', 'Raze', 'Clove')], base: { partySize: 5, partyMax: 5, smallText: 'Jett • Radiant' }, stages: [
     ['In lobby', { details: 'Competitive', state: 'In Lobby', partySize: 2 }],
     ['In queue', { details: 'Competitive', state: 'In Queue' }],
     ['Agent select', { details: 'Competitive • Ascent', state: 'Agent Select', largeText: 'Ascent' }],
@@ -304,7 +343,7 @@ const PRESENCE_EXAMPLES = [
     pre: [['In lobby', 20, 60], ['In queue', 40, 200], ['Agent select', 75, 90]],
     score: { ...ROUNDS, stage: 'In match', to: 13, secs: [85, 125], text: 'In Match • {a} - {b}' }
   } },
-  { match: 'league of legends', base: { details: 'Ranked Solo/Duo', partySize: 2, partyMax: 2, smallText: 'Challenger I' }, stages: [
+  { match: 'league of legends', vary: [names('Yasuo', 'Ahri', 'Lee Sin', 'Jinx', 'Zed', 'Lux')], base: { details: 'Ranked Solo/Duo', partySize: 2, partyMax: 2, smallText: 'Challenger I' }, stages: [
     ['In lobby', { state: 'In Lobby' }],
     ['In queue', { state: 'In Queue' }],
     ['Champion select', { details: 'Summoner’s Rift (Ranked Solo/Duo)', state: 'Champion Select' }],
@@ -313,7 +352,7 @@ const PRESENCE_EXAMPLES = [
     pre: [['In lobby', 20, 60], ['In queue', 60, 240], ['Champion select', 90, 150]],
     score: { kind: 'stats', stage: 'In game', length: [1500, 2200], secs: [60, 150], text: 'In Game • {k}/{d}/{as} Yasuo', won: 'Victory • {k}/{d}/{as}', lost: 'Defeat • {k}/{d}/{as}' }
   } },
-  { match: 'counter-strike', base: { partySize: 5, partyMax: 5, smallText: 'Rating 32,000' }, stages: [
+  { match: 'counter-strike', vary: [names('Mirage', 'Inferno', 'Dust II', 'Nuke', 'Ancient', 'Anubis')], base: { partySize: 5, partyMax: 5, smallText: 'Rating 32,000' }, stages: [
     ['In lobby', { details: 'Premier', state: 'In Lobby' }],
     ['In queue', { details: 'Premier', state: 'Searching for a match' }],
     ['Warmup', { details: 'Premier • Mirage', state: 'Warmup' }],
@@ -340,7 +379,7 @@ const PRESENCE_EXAMPLES = [
     pre: [['In lobby', 15, 45], ['In queue', 20, 90]],
     score: { ...ROUNDS, stage: 'In match', to: 3, secs: [40, 100], text: 'Score {a} - {b}' }
   } },
-  { match: 'overwatch', base: { partySize: 5, partyMax: 5, smallText: 'Champion 1' }, stages: [
+  { match: 'overwatch', vary: [names('Kiriko', 'Tracer', 'Ana', 'Genji', 'Mercy'), names('Colosseo', 'New Queen Street', 'Esperança')], base: { partySize: 5, partyMax: 5, smallText: 'Champion 1' }, stages: [
     ['In lobby', { details: 'Competitive', state: 'In Lobby' }],
     ['In queue', { details: 'Competitive', state: 'In Queue' }],
     ['In match', { details: 'Competitive Push • Colosseo', state: 'Winning 1 - 0 • Kiriko', timer: 'reset' }]
@@ -379,8 +418,11 @@ const PRESENCE_EXAMPLES = [
 
 const rand = ([min, max]) => min + Math.floor(Math.random() * (max - min + 1));
 
-// One match as [second line, seconds] pairs, ending with the result. You win a bit more often than not.
-function matchLines(score) {
+// Auto-play settings: the share of rounds and matches you win, and a multiplier for how long each step lasts.
+const autoplaySettings = () => ({ win: Number(load('winRate', '60')) / 100, speed: Number(load('autoSpeed', '1')) });
+
+// One match as [second line, seconds] pairs, ending with the result. `win` is your chance per round or match.
+function matchLines(score, win = 0.6) {
   const v = { a: 0, b: 0, k: 0, d: 0, as: 0, left: score.from };
   const lines = [];
   const line = (text, seconds) => lines.push([text.replace(/\{(\w+)\}/g, (_, name) => v[name]), seconds]);
@@ -388,11 +430,11 @@ function matchLines(score) {
   if (score.kind === 'rounds') {
     while (v.a < score.to && v.b < score.to) {
       line(score.text, rand(score.secs));
-      if (Math.random() < 0.6) v.a++; else v.b++;
+      if (Math.random() < win) v.a++; else v.b++;
     }
     won = v.a === score.to;
   } else if (score.kind === 'survive') {
-    won = Math.random() < 0.4;
+    won = Math.random() < win * 2 / 3; // one squad of many wins less often than one team of two
     const until = won ? 1 : rand([2, Math.ceil(score.from / 4)]);
     while (v.left > until) {
       line(score.text, rand(score.secs));
@@ -405,7 +447,7 @@ function matchLines(score) {
       const r = Math.random();
       if (r < 0.4) v.k++; else if (r < 0.55) v.d++; else v.as++;
     }
-    won = Math.random() < 0.6;
+    won = Math.random() < win;
   }
   line(won ? score.won : score.lost, rand([15, 30]));
   return lines;
@@ -414,19 +456,28 @@ function matchLines(score) {
 // Sessions back to back for about four hours; stopping the game ends it sooner. `keep` (images, links,
 // Ask to Join) is applied to every step.
 function sessionPlan(example, keep) {
-  const stage = (label) => ({ ...keep, ...example.base, ...example.stages.find(([l]) => l === label)[1] });
+  const { win, speed } = autoplaySettings();
+  // This round's map, agent or file: [texts in the stages, texts to show instead] per `vary` group.
+  let swaps = [];
+  const swap = (text) => swaps.reduce((t, [from, to]) => from.reduce((t2, f, i) => t2.replaceAll(f, to[i]), t), text);
+  const stage = (label) => Object.fromEntries(
+    Object.entries({ ...keep, ...example.base, ...example.stages.find(([l]) => l === label)[1] })
+      .map(([name, value]) => [name, typeof value === 'string' ? swap(value) : value])
+  );
   const steps = [];
   let total = 0;
   const add = (presence, seconds, keepTimer = false) => {
+    seconds = Math.max(5, Math.round(seconds * speed));
     steps.push({ presence, seconds, keepTimer });
     total += seconds;
   };
   while (total < 4 * 3600) {
+    swaps = (example.vary ?? []).map((options) => [options[0], options[rand([0, options.length - 1])]]);
     for (const [label, min, max] of example.play.pre) add({ ...stage(label), timer: example.play.steady ? '' : 'reset' }, rand([min, max]));
     const { score } = example.play;
     if (!score) continue;
     const match = stage(score.stage);
-    matchLines(score).forEach(([state, seconds], i) => add({ ...match, state, timer: match.timer || 'reset' }, seconds, i > 0));
+    matchLines(score, win).forEach(([state, seconds], i) => add({ ...match, state: swap(state), timer: match.timer || 'reset' }, seconds, i > 0));
   }
   return steps;
 }
@@ -448,8 +499,8 @@ function bumpScore(side) {
 
 // The fields a stage or auto-play step doesn't set, kept from the form.
 function keptFields() {
-  const { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin } = readPresence();
-  return { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin };
+  const { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, button1Label, button1Url, button2Label, button2Url } = readPresence();
+  return { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, button1Label, button1Url, button2Label, button2Url };
 }
 
 async function toggleAutoplay(game) {
@@ -983,6 +1034,45 @@ function lookupButton(id) {
   return button;
 }
 
+// ---- Settings ----
+
+async function openSettings() {
+  const form = $('settingsForm');
+  const settings = await invoke('get_settings');
+  form.elements.showAll.checked = settings.showAll;
+  form.elements.startWithWindows.checked = settings.startWithWindows;
+  form.elements.winRate.value = load('winRate', '60');
+  form.elements.autoSpeed.value = load('autoSpeed', '1');
+  if ((await dialogResult($('settingsDialog'))) !== 'confirm') return;
+  save('winRate', form.elements.winRate.value);
+  save('autoSpeed', form.elements.autoSpeed.value);
+  try {
+    await invoke('set_settings', { showAll: form.elements.showAll.checked, startWithWindows: form.elements.startWithWindows.checked });
+    log('Saved the settings.', 'ok');
+  } catch (e) {
+    log(`Couldn’t save the settings: ${e}`, 'error');
+  }
+}
+
+async function exportLibrary() {
+  try {
+    log(`Saved your library and groups to ${await invoke('export_library')}.`, 'ok');
+  } catch (e) {
+    log(`Couldn’t export the library: ${e}`, 'error');
+  }
+}
+
+async function importLibrary(file) {
+  try {
+    const { games = [], groups = [] } = JSON.parse(await file.text());
+    const [addedGames, addedGroups] = await invoke('import_library', { games, groups });
+    await refresh();
+    log(`Imported ${plural(addedGames, 'game')} and ${plural(addedGroups, 'group')}; ones you already had were skipped.`, 'ok');
+  } catch (e) {
+    log(`Couldn’t import that file: ${e}`, 'error');
+  }
+}
+
 // ---- Updates ----
 
 listen('update-available', ({ payload }) => {
@@ -1037,6 +1127,9 @@ listen('autoplay-ended', ({ payload: key }) => {
   render();
 });
 
+// Games launched from the tray menu.
+listen('games-changed', refresh);
+
 listen('game-exited', ({ payload: key }) => {
   if (!state.running[key]) return; // stopped from this window, already handled
   delete state.running[key];
@@ -1049,6 +1142,14 @@ $('minimizeBtn').onclick = () => appWindow.minimize();
 $('closeBtn').onclick = () => appWindow.close();
 $('discoverBtn').onclick = () => setView('discover');
 $('importBtn').onclick = importFromPc;
+$('settingsBtn').onclick = openSettings;
+$('exportBtn').onclick = exportLibrary;
+$('importFileBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = (e) => {
+  if (e.target.files[0]) importLibrary(e.target.files[0]);
+  e.target.value = '';
+};
+for (const name of ['largeImage', 'smallImage']) $('presenceForm').elements[name].onfocus = () => { imageField = name; };
 $('newGroupBtn').onclick = async () => {
   const group = await newGroup();
   if (group) setView('group', group.id);

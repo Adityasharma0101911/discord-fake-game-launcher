@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,7 +53,23 @@ const APPS: &[&str] = &[
     "802958789555781663",
     "802958833214423081",
     "721748388143562852",
+    // Figma, Apple Music, Canva, Duolingo, Jellyfin, Stack Overflow, Wikipedia, Google Meet, Zoom, Microsoft Teams,
+    // Instagram, GitLab.
+    "768942376403075073",
+    "842112189618978897",
+    "670612134878773297",
+    "1177802176140156998",
+    "669359568391766018",
+    "610123745033584651",
+    "609364070684033044",
+    "701914032541794386",
+    "765876503161733140",
+    "846725225219489812",
+    "547436289960574977",
+    "709526684428271687",
 ];
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "EndosDiscordGameSpoofer";
 // Hand-picked by their name in Discord's list: there is no keyless popularity data outside Steam.
 const BEYOND_STEAM: &[&str] = &[
     "VALORANT",
@@ -91,6 +107,8 @@ struct AppState {
     running: Mutex<HashMap<String, RunningGame>>,
     /// Auto-play sessions by game key; setting the flag stops one. Held while a status file is written.
     autoplay: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Started with Windows (--tray): stays in the tray with no window and nothing running.
+    stay: AtomicBool,
     update: Mutex<Option<Update>>,
     downloaded: Mutex<Option<(Update, Vec<u8>)>>,
 }
@@ -280,6 +298,18 @@ struct Presence {
     /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`.
     timer: String,
     timer_minutes: u32,
+    /// Up to two link buttons under the status. Discord refuses them together with Ask to Join.
+    button1_label: String,
+    button1_url: String,
+    button2_label: String,
+    button2_url: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct Settings {
+    /// Also send Rich Presence for games Discord detects by exe, so several running games can show at once.
+    show_all: bool,
 }
 
 /// One status in an auto-play session, shown for `seconds`. `keep_timer` continues the previous step's timer.
@@ -577,7 +607,10 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
         let s = s.trim();
         (min..=max).contains(&s.chars().count()).then(|| json!(s))
     };
-    let link = |s: &str| fit(s, 1, 256).filter(|_| s.trim().starts_with("https://") || s.trim().starts_with("http://"));
+    let link = |s: &str, max: usize| fit(s, 1, max).filter(|_| s.trim().starts_with("https://") || s.trim().starts_with("http://"));
+    let button = |label: &str, url: &str| Some(json!({ "label": fit(label, 1, 32)?, "url": link(url, 512)? }));
+    let buttons: Vec<Value> =
+        [button(&p.button1_label, &p.button1_url), button(&p.button2_label, &p.button2_url)].into_iter().flatten().collect();
     let pick = |fields: Vec<(&str, Option<Value>)>| -> serde_json::Map<String, Value> {
         fields.into_iter().filter_map(|(k, v)| Some((k.to_string(), v?))).collect()
     };
@@ -590,11 +623,12 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
         ("name", fit(&p.app_name, 1, 128)),
         ("type", (!p.ask_to_join && [2, 3, 5].contains(&p.activity_type)).then(|| json!(p.activity_type))),
         ("details", fit(&p.details, 2, 128)),
-        ("details_url", link(&p.details_url)),
+        ("details_url", link(&p.details_url, 256)),
         ("state", fit(&p.state, 2, 128)),
-        ("state_url", link(&p.state_url)),
+        ("state_url", link(&p.state_url, 256)),
         ("party", (!party.is_empty()).then_some(Value::Object(party))),
         ("secrets", p.ask_to_join.then(|| json!({ "join": "endo-join" }))),
+        ("buttons", (!p.ask_to_join && !buttons.is_empty()).then(|| json!(buttons))),
         // Without timestamps the fake exe adds the launch time.
         (
             "timestamps",
@@ -671,7 +705,7 @@ fn games_changed(app: &AppHandle) {
         };
         let _ = tray.set_tooltip(Some(tip));
     }
-    if count == 0 && app.webview_windows().is_empty() {
+    if count == 0 && app.webview_windows().is_empty() && !app.state::<AppState>().stay.load(Ordering::Relaxed) {
         app.exit(0);
     }
 }
@@ -747,14 +781,31 @@ fn set_low_memory(window: &tauri::Window, low: bool) {
     });
 }
 
+/// Open, one "Launch group" entry per group, Stop all, Quit.
+fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "open", "Open", true, None::<&str>)?)?;
+    for group in read_groups(app) {
+        let label = format!("Launch group: {}", group.name);
+        menu.append(&MenuItem::with_id(app, format!("group:{}", group.id), label, true, None::<&str>)?)?;
+    }
+    menu.append(&MenuItem::with_id(app, "stop-all", "Stop all games", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
+    Ok(menu)
+}
+
+/// Rebuilds the tray menu after the groups change.
+fn refresh_tray(app: &AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id("main"), tray_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "stop-all", "Stop all games", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip(app.config().product_name.clone().unwrap_or_default())
-        .menu(&Menu::with_items(app, &[&open, &stop, &quit])?)
+        .menu(&tray_menu(app.handle())?)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
@@ -763,7 +814,14 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 stop_all(app);
                 app.exit(0);
             }
-            _ => {}
+            id => {
+                let group = id.strip_prefix("group:").and_then(|id| read_groups(app).into_iter().find(|g| g.id == id));
+                for key in group.iter().flat_map(|g| &g.keys) {
+                    launch(app, key, None);
+                }
+                // An open window reloads what is running.
+                let _ = app.emit("games-changed", ());
+            }
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
@@ -772,6 +830,34 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// Runs reg.exe without flashing a console window; true when it succeeded.
+fn reg(args: &[&str]) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    Command::new("reg")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn starts_with_windows() -> bool {
+    reg(&["query", RUN_KEY, "/v", RUN_NAME])
+}
+
+/// Adds or removes this exe (with --tray) in the current user's Run key.
+fn set_start_with_windows(on: bool) -> Result<(), String> {
+    let done = if on {
+        let exe = std::env::current_exe().map_err(err)?;
+        reg(&["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &format!("\"{}\" --tray", exe.display()), "/f"])
+    } else {
+        !starts_with_windows() || reg(&["delete", RUN_KEY, "/v", RUN_NAME, "/f"])
+    };
+    done.then_some(()).ok_or_else(|| "Couldn’t change the Windows startup setting.".into())
 }
 
 fn http() -> reqwest::Client {
@@ -979,14 +1065,16 @@ async fn lookup_app(app: AppHandle, id: String) -> Result<DbGame, String> {
     Ok(app_entry(&id, &res.json().await.map_err(err)?))
 }
 
-/// The names of the images an app has uploaded to Discord; each can be used as a status image.
+/// The images an app has uploaded to Discord; each name can be used as a status image.
 #[tauri::command]
-async fn app_assets(id: String) -> Result<Vec<String>, String> {
+async fn app_assets(id: String) -> Result<Vec<Value>, String> {
     if !is_app_id(&id) {
         return Ok(Vec::new());
     }
     let v = get_json(&http(), &format!("https://discord.com/api/v9/oauth2/applications/{id}/assets")).await.map_err(err)?;
-    Ok(v.as_array().into_iter().flatten().filter_map(|a| a["name"].as_str().map(String::from)).collect())
+    // `id` is the image's own id, for its preview on Discord's image server.
+    let images = v.as_array().into_iter().flatten().filter(|a| a["name"].is_string() && a["id"].is_string());
+    Ok(images.map(|a| json!({ "name": a["name"], "id": a["id"] })).collect())
 }
 
 /// Games installed on this PC (Steam, Epic, Windows' installed apps) that are in Discord's list.
@@ -1187,6 +1275,7 @@ fn save_group(app: AppHandle, group: Group) -> Result<Group, String> {
         None => groups.push(group.clone()),
     }
     write_json(&app, "groups.json", &groups)?;
+    refresh_tray(&app);
     Ok(group)
 }
 
@@ -1194,7 +1283,9 @@ fn save_group(app: AppHandle, group: Group) -> Result<Group, String> {
 fn delete_group(app: AppHandle, id: String) -> Result<(), String> {
     let mut groups = read_groups(&app);
     groups.retain(|g| g.id != id);
-    write_json(&app, "groups.json", &groups)
+    write_json(&app, "groups.json", &groups)?;
+    refresh_tray(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1223,21 +1314,29 @@ fn create_shortcut(app: AppHandle, key: String) -> Value {
 }
 
 #[tauri::command]
-fn launch_game(app: AppHandle, state: State<'_, AppState>, key: String, minutes: Option<f64>) -> Value {
-    if let Some(game) = state.running.lock().unwrap().get_mut(&key) {
+fn launch_game(app: AppHandle, key: String, minutes: Option<f64>) -> Value {
+    launch(&app, &key, minutes)
+}
+
+fn launch(app: &AppHandle, key: &str, minutes: Option<f64>) -> Value {
+    let state = app.state::<AppState>();
+    if let Some(game) = state.running.lock().unwrap().get_mut(key) {
         if let Ok(None) = game.child.try_wait() {
             return json!({ "ok": true, "alreadyRunning": true, "run": game.info });
         }
     }
     let minutes = minutes.filter(|m| m.is_finite() && *m > 0.0);
     let started = (|| -> Result<Child, String> {
-        let game = find_game(&app, &key)?;
-        let exe = ensure_fake_exe(&app, &game)?;
+        let game = find_game(app, key)?;
+        let exe = ensure_fake_exe(app, &game)?;
         // Also removes a status file left over from a removed and re-added game.
-        write_presence_file(&app, &game, now_ms())?;
+        write_presence_file(app, &game, now_ms())?;
         // The fake exe shows the name as its window title and closes itself after `minutes`.
         let mut command = Command::new(&exe);
         command.args(fake_exe_args(&game)).current_dir(exe.parent().unwrap());
+        if !game.rpc && is_app_id(&game.app_id) && read_json::<Settings>(app, "settings.json").unwrap_or_default().show_all {
+            command.arg(format!("--rpc={}", game.app_id));
+        }
         if let Some(m) = minutes {
             command.arg(m.to_string());
         }
@@ -1250,10 +1349,62 @@ fn launch_game(app: AppHandle, state: State<'_, AppState>, key: String, minutes:
     let started_at = now_ms();
     let info = RunInfo { started_at, stop_at: minutes.map(|m| started_at + (m * 60_000.0) as u64) };
     let pid = child.id();
-    state.running.lock().unwrap().insert(key.clone(), RunningGame { child, info });
-    watch_exit(app.clone(), key, pid);
-    games_changed(&app);
+    state.running.lock().unwrap().insert(key.to_string(), RunningGame { child, info });
+    watch_exit(app.clone(), key.to_string(), pid);
+    games_changed(app);
     json!({ "ok": true, "run": info })
+}
+
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Value {
+    let settings: Settings = read_json(&app, "settings.json").unwrap_or_default();
+    json!({ "showAll": settings.show_all, "startWithWindows": starts_with_windows() })
+}
+
+#[tauri::command]
+fn set_settings(app: AppHandle, show_all: bool, start_with_windows: bool) -> Result<(), String> {
+    write_json(&app, "settings.json", &Settings { show_all })?;
+    if start_with_windows != starts_with_windows() {
+        set_start_with_windows(start_with_windows)?;
+    }
+    Ok(())
+}
+
+/// Saves the library and groups as one file in Downloads and returns its path.
+#[tauri::command]
+fn export_library(app: AppHandle) -> Result<PathBuf, String> {
+    let path = app.path().download_dir().map_err(err)?.join("endo-spoofer-library.json");
+    let data = json!({ "games": read_my_games(&app)?, "groups": read_groups(&app) });
+    fs::write(&path, serde_json::to_vec_pretty(&data).map_err(err)?).map_err(err)?;
+    Ok(path)
+}
+
+/// Adds the games and groups of an exported file that aren't here yet; returns how many of each.
+#[tauri::command]
+fn import_library(app: AppHandle, games: Vec<MyGame>, groups: Vec<Group>) -> Result<(usize, usize), String> {
+    let mut library = read_my_games(&app)?;
+    let before = library.len();
+    // Everything is checked before anything is saved.
+    for game in games {
+        fake_exe_rel_path(&game)?;
+        if (game.rpc || game.presence.is_some()) && !is_app_id(&game.app_id) {
+            return Err(format!("Unsupported app id: {}", game.app_id));
+        }
+        if !library.iter().any(|g| game_key(g) == game_key(&game)) {
+            library.push(game);
+        }
+    }
+    let mut all_groups = read_groups(&app);
+    let groups_before = all_groups.len();
+    for group in groups {
+        if !group.id.is_empty() && !all_groups.iter().any(|g| g.id == group.id) {
+            all_groups.push(group);
+        }
+    }
+    write_my_games(&app, &library)?;
+    write_json(&app, "groups.json", &all_groups)?;
+    refresh_tray(&app);
+    Ok((library.len() - before, all_groups.len() - groups_before))
 }
 
 #[tauri::command]
@@ -1334,6 +1485,12 @@ fn main() {
         .manage(AppState::default())
         .setup(|app| {
             build_tray(app)?;
+            if std::env::args().any(|a| a == "--tray") {
+                app.state::<AppState>().stay.store(true, Ordering::Relaxed);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.destroy();
+                }
+            }
             // Updates turn on once tauri.conf.json has plugins.updater (endpoints + pubkey); off in dev builds.
             if !cfg!(debug_assertions) && app.config().plugins.0.contains_key("updater") {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -1377,6 +1534,10 @@ fn main() {
             stop_game,
             get_running,
             discord_running,
+            get_settings,
+            set_settings,
+            export_library,
+            import_library,
             update_install,
             update_quit_and_install
         ])
@@ -1385,7 +1546,8 @@ fn main() {
         .run(|app, event| {
             // Closing the last window keeps the app in the tray while fake games run.
             if let RunEvent::ExitRequested { code: None, api, .. } = event {
-                if !app.state::<AppState>().running.lock().unwrap().is_empty() {
+                let state = app.state::<AppState>();
+                if state.stay.load(Ordering::Relaxed) || !state.running.lock().unwrap().is_empty() {
                     api.prevent_exit();
                 }
             }
@@ -1494,8 +1656,20 @@ mod tests {
 
     #[test]
     fn custom_status_keeps_only_fields_discord_accepts() {
-        let named = Presence { app_name: " My App ".into(), large_image: "rust".into(), ..Default::default() };
-        assert_eq!(presence_activity(&named, 1000), json!({ "name": "My App", "assets": { "large_image": "rust" } }));
+        let named = Presence {
+            app_name: " My App ".into(),
+            large_image: "rust".into(),
+            button1_label: "View Repository".into(),
+            button1_url: "https://github.com/me/app".into(),
+            button2_label: "No link".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            presence_activity(&named, 1000),
+            json!({ "name": "My App", "buttons": [{ "label": "View Repository", "url": "https://github.com/me/app" }], "assets": { "large_image": "rust" } })
+        );
+        // Discord refuses buttons together with Ask to Join.
+        assert!(presence_activity(&Presence { ask_to_join: true, ..named }, 1000).get("buttons").is_none());
         let p = Presence {
             activity_type: 5,
             details: " Competitive • Ascent ".into(),

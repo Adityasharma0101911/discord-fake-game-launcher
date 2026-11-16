@@ -141,7 +141,12 @@ try {
   const d = await run(call('discover'));
   assert.ok(d.beyondSteam.some((c) => c.game.name === 'VALORANT'));
   const code = d.apps.find((c) => c.game.name === 'Visual Studio Code').game;
-  assert.ok(code.rpc && (await run(call('app_assets', { id: code.id }))).includes('vscode'), 'apps shelf and image names');
+  assert.ok(code.rpc && (await run(call('app_assets', { id: code.id }))).some((a) => a.name === 'vscode' && a.id), 'apps shelf and images');
+  assert.ok(d.apps.length >= 25, 'most of the apps shelf loaded');
+  assert.equal(typeof (await run(call('get_settings'))).showAll, 'boolean');
+  assert.deepEqual(await run(call('import_library', { games: [], groups: [] })), [0, 0]);
+  const editing = await run(`return sessionPlan(presenceExample({ appId: ${JSON.stringify(code.id)}, name: 'x' }), {}).map((s) => s.presence)`);
+  assert.ok(editing.every((p) => p.timer === '' && p.largeImage) && new Set(editing.map((p) => p.details)).size > 3, 'editor auto-play rotates files on one timer');
   assert.equal(await run(`return presenceExample({ appId: ${JSON.stringify(code.id)}, name: 'x' }).stages[0][0]`), 'Editing');
   console.log(`discover: ${d.mostPlayed.length} most played, ${d.topRated.length} top rated, ${d.beyondSteam.length} beyond Steam, ${d.mobile.length} mobile, ${d.count} in Discord's list`);
   const installedCount = (await run(call('scan_installed'))).length;
