@@ -130,7 +130,7 @@
                 <option value="reset">Time since this status</option>
                 <option value="left">Time left</option>
                 <option value="ago">Locked: always starts at a set time</option>
-                <option value="from">Start from a set time, then keep counting</option>
+                <option value="from">Start from a set time, continue each launch</option>
               </select>
             </label>
             <label>Minutes (for “Time left”, “Locked” and “Start from”; 1,660 shows 27:40:00) <input name="timerMinutes" class="input" type="number" min="1" max="600000"></label>
@@ -153,6 +153,7 @@
             <label>Button 2 text <input name="button2Label" class="input" maxlength="32"></label>
             <label>Button 2 link <input name="button2Url" class="input" type="url" pattern="https?://.+" maxlength="512" placeholder="https://…"></label>
             <datalist id="assetNames"></datalist>
+            <label class="check"><input name="timerAlways" type="checkbox"> For “Start from a set time”: keep the clock moving while the game isn’t running. Off, it pauses when the game stops and continues at the next launch.</label>
             <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, friends who ask get no answer, and it hides the two buttons above.</label>
           </div>
           <div class="secondary-actions">

@@ -174,7 +174,7 @@ try {
   // "Launch favorites" button, unless the real library has other favorites it would also launch.
   const favorites = await run(`return state.library.filter((g) => g.isFavorite).map((g) => g.key)`);
   if (favorites.length === 1) await run(`document.getElementById('launchFavoritesBtn').click(); return 1`);
-  else await run(call('launch_game', { key: KEY }));
+  else await run(`await launch(gameByKey(${JSON.stringify(KEY)})); return 1`);
   await sleep(1500);
   assert.ok(fakeRunning(), 'fake game running');
   const timeText = await run(`return document.querySelector('[data-time-for="${KEY}"]').textContent`);
@@ -236,8 +236,30 @@ try {
   await run(`setView('game', ${JSON.stringify(KEY)}); document.getElementById('presenceForm').elements.state.value = 'In Match • 12 - 3'; bumpScore(0); return 1`);
   await sleep(800);
   assert.equal((await run(call('get_library'))).find((g) => g.key === KEY).presence.state, 'In Match • 13 - 3');
+  // "Start from a set time": the clock waits while the game is stopped and continues at launch.
+  const fromClock = { timer: 'from', timerMinutes: 90, details: 'Clock test' };
+  const clockStart = async () => (await run(call('get_library'))).find((g) => g.key === KEY).presence.timerStart;
+  await run(call('set_presence', { key: KEY, presence: fromClock }));
+  const savedStart = await clockStart();
+  assert.ok(Math.abs(Date.now() - 90 * 60000 - savedStart) < 5000, 'starts 90 minutes in');
+  await sleep(2000);
+  await run(call('launch_game', { key: KEY }));
+  const resumed = await clockStart();
+  assert.ok(resumed - savedStart >= 1900 && resumed - savedStart < 6000, 'paused while stopped');
+  assert.equal(JSON.parse(fs.readFileSync(presenceFile, 'utf8').split('\n')[1]).timestamps.start, resumed);
+  await run(call('set_presence', { key: KEY, presence: { ...fromClock, state: 'Still going' } }));
+  assert.equal(await clockStart(), resumed, 'later saves keep the clock');
+  await run(call('stop_game', { key: KEY }));
+  await sleep(1500);
+  await run(call('set_presence', { key: KEY, presence: { ...fromClock, timerAlways: true } }));
+  const alwaysStart = await clockStart();
+  await sleep(1500);
+  await run(call('launch_game', { key: KEY }));
+  assert.equal(await clockStart(), alwaysStart, 'with the checkbox it keeps moving while stopped');
+  await run(call('stop_game', { key: KEY }));
+  await sleep(1500);
   await run(call('set_presence', { key: KEY, presence: null }));
-  console.log('custom Discord status file / auto-play / session plan / score button: ok');
+  console.log('custom Discord status file / auto-play / session plan / score button / set-time clock: ok');
 
   const sc = await run(call('create_shortcut', { key: KEY }));
   assert.ok(sc.ok, JSON.stringify(sc));

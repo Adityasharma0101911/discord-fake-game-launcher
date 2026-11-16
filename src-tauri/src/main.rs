@@ -297,11 +297,15 @@ struct Presence {
     small_text: String,
     /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`,
     /// "ago" counts up starting at `timer_minutes` on every launch and save, "from" started at `timer_minutes` when it
-    /// was first saved and has counted on since, also while the game is stopped.
+    /// was first saved and continues from where it was at each launch.
     timer: String,
     timer_minutes: u32,
     /// For "from": when the clock reads zero, in ms. Set when the status is saved.
     timer_start: u64,
+    /// For "from": the clock also runs while the game is stopped.
+    timer_always: bool,
+    /// For "from" without `timer_always`: when the game stopped, in ms; 0 while it runs.
+    timer_paused_at: u64,
     /// Up to two link buttons under the status. Discord refuses them together with Ask to Join.
     button1_label: String,
     button1_url: String,
@@ -717,6 +721,23 @@ fn games_changed(app: &AppHandle) {
     }
 }
 
+/// Pauses (game stopped) or resumes (game launched) a "from" clock that only runs while the game does.
+fn set_clock_running(app: &AppHandle, key: &str, running: bool) {
+    let Ok(mut games) = read_my_games(app) else { return };
+    let now = now_ms();
+    let Some(p) = games.iter_mut().find(|g| game_key(g) == key).and_then(|g| g.presence.as_mut()) else { return };
+    if p.timer != "from" || p.timer_always || p.timer_start == 0 || running == (p.timer_paused_at == 0) {
+        return;
+    }
+    if running {
+        p.timer_start += now.saturating_sub(p.timer_paused_at);
+        p.timer_paused_at = 0;
+    } else {
+        p.timer_paused_at = now;
+    }
+    let _ = write_my_games(app, &games);
+}
+
 /// Reports a fake game that exits on its own (closed, auto-stop, killed); stop_game reports its own.
 fn watch_exit(app: AppHandle, key: String, pid: u32) {
     std::thread::spawn(move || loop {
@@ -734,6 +755,7 @@ fn watch_exit(app: AppHandle, key: String, pid: u32) {
                 _ => return,
             }
         }
+        set_clock_running(&app, &key, false);
         let _ = app.emit("game-exited", &key);
         games_changed(&app);
         return;
@@ -745,6 +767,7 @@ fn stop(app: &AppHandle, key: &str) -> bool {
     let Some(mut game) = game else { return false };
     let _ = game.child.kill();
     let _ = game.child.wait();
+    set_clock_running(app, key, false);
     let _ = app.emit("game-exited", key);
     true
 }
@@ -1166,12 +1189,22 @@ fn set_presence(app: AppHandle, state: State<'_, AppState>, key: String, presenc
     if !is_app_id(&game.app_id) {
         return Err("This game has no Discord app ID, so it can’t have a custom status.".into());
     }
+    let running = state.running.lock().unwrap().contains_key(&key);
     game.presence = presence.filter(|p| *p != Presence::default()).map(|mut p| {
-        // "from" keeps its clock through later saves (stage buttons, score) unless the minutes change.
-        p.timer_start = match &game.presence {
-            _ if p.timer != "from" || p.timer_minutes == 0 => 0,
-            Some(old) if old.timer == "from" && old.timer_minutes == p.timer_minutes && old.timer_start > 0 => old.timer_start,
-            _ => now_ms().saturating_sub(u64::from(p.timer_minutes) * 60_000),
+        let now = now_ms();
+        // "from" keeps its clock through later saves (stage buttons, score) unless its settings change.
+        (p.timer_start, p.timer_paused_at) = match &game.presence {
+            _ if p.timer != "from" || p.timer_minutes == 0 => (0, 0),
+            Some(old)
+                if old.timer == "from"
+                    && old.timer_minutes == p.timer_minutes
+                    && old.timer_always == p.timer_always
+                    && old.timer_start > 0 =>
+            {
+                (old.timer_start, old.timer_paused_at)
+            }
+            // A stopped game's clock waits at the set time until it is launched.
+            _ => (now.saturating_sub(u64::from(p.timer_minutes) * 60_000), if running || p.timer_always { 0 } else { now }),
         };
         p
     });
@@ -1342,6 +1375,7 @@ fn launch(app: &AppHandle, key: &str, minutes: Option<f64>) -> Value {
     }
     let minutes = minutes.filter(|m| m.is_finite() && *m > 0.0);
     let started = (|| -> Result<Child, String> {
+        set_clock_running(app, key, true);
         let game = find_game(app, key)?;
         let exe = ensure_fake_exe(app, &game)?;
         // Also removes a status file left over from a removed and re-added game.

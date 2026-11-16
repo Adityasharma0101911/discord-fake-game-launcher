@@ -547,7 +547,8 @@ function readPresence() {
     partySize: number('partySize'),
     partyMax: number('partyMax'),
     timerMinutes: number('timerMinutes'),
-    askToJoin: data.askToJoin === 'on'
+    askToJoin: data.askToJoin === 'on',
+    timerAlways: data.timerAlways === 'on'
   };
 }
 
