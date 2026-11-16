@@ -154,6 +154,7 @@
             <label>Button 2 link <input name="button2Url" class="input" type="url" pattern="https?://.+" maxlength="512" placeholder="https://…"></label>
             <datalist id="assetNames"></datalist>
             <label class="check"><input name="timerAlways" type="checkbox"> For “Start from a set time”: keep the clock moving while the game isn’t running. Off, it pauses when the game stops and continues at the next launch.</label>
+            <label class="check"><input name="askToStream" type="checkbox"> Let friends ask you to stream this app. Discord offers “Ask to stream” only for apps shown as “Playing”, so this keeps the status on Playing.</label>
             <label class="check"><input name="askToJoin" type="checkbox"> Show an “Ask to Join” button. Discord only shows it for “Playing”, friends who ask get no answer, and it hides the two buttons above.</label>
           </div>
           <div class="secondary-actions">
@@ -259,6 +260,11 @@
         <button type="button" id="exportBtn" class="btn">Export to Downloads</button>
         <button type="button" id="importFileBtn" class="btn">Import a file…</button>
         <input type="file" id="importFile" accept=".json,application/json" hidden>
+      </div>
+      <h3>Updates</h3>
+      <div class="settings-row">
+        <button type="button" id="checkUpdateBtn" class="btn">Check for updates</button>
+        <span id="updateStatus" class="subtle small-text" aria-live="polite"></span>
       </div>
       <details>
         <summary>Tips for play time and badges</summary>

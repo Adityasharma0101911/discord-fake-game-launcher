@@ -35,7 +35,7 @@ shows the game in your status, which also counts toward Discord Quests.
   Pick status images from a grid of each app’s own images, add up to two link buttons (“View Repository”), and
   set an optional app name to make any app pose as your own.
 - **Settings (⚙):** show every running game at once (each is also sent as Rich Presence), start with Windows in
-  the tray, auto-play win rate and speed, export and import of your library, and tips for play time and badges.
+  the tray, auto-play win rate and speed, export and import of your library, a “Check for updates” button, and tips for play time and badges.
 - The tray menu launches your groups.
 - **Groups:** save sets of games and launch or stop them together.
 - **Multi-select:** pick several games to add at once, or launch, stop, group or remove several library games.

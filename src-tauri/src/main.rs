@@ -289,6 +289,8 @@ struct Presence {
     state_url: String,
     /// Discord's "Ask to Join" button. Only shown for Playing; friends who ask get no answer.
     ask_to_join: bool,
+    /// Keeps the status "Playing": Discord only lets friends ask you to stream an app you are playing.
+    ask_to_stream: bool,
     party_size: u32,
     party_max: u32,
     large_image: String,
@@ -629,7 +631,7 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
     ]);
     let mut activity = pick(vec![
         ("name", fit(&p.app_name, 1, 128)),
-        ("type", (!p.ask_to_join && [2, 3, 5].contains(&p.activity_type)).then(|| json!(p.activity_type))),
+        ("type", (!p.ask_to_join && !p.ask_to_stream && [2, 3, 5].contains(&p.activity_type)).then(|| json!(p.activity_type))),
         ("details", fit(&p.details, 2, 128)),
         ("details_url", link(&p.details_url, 256)),
         ("state", fit(&p.state, 2, 128)),
@@ -1407,7 +1409,7 @@ fn launch(app: &AppHandle, key: &str, minutes: Option<f64>) -> Value {
 #[tauri::command]
 fn get_settings(app: AppHandle) -> Value {
     let settings: Settings = read_json(&app, "settings.json").unwrap_or_default();
-    json!({ "showAll": settings.show_all, "startWithWindows": starts_with_windows() })
+    json!({ "showAll": settings.show_all, "startWithWindows": starts_with_windows(), "version": app.package_info().version.to_string() })
 }
 
 #[tauri::command]
@@ -1473,16 +1475,26 @@ fn discord_running() -> bool {
     discord_is_running()
 }
 
-async fn check_for_update(app: &AppHandle) -> Result<(), String> {
+/// True when an update was found; the window is told through "update-available".
+async fn check_for_update(app: &AppHandle) -> Result<bool, String> {
     let Some(update) = app.updater().map_err(err)?.check().await.map_err(err)? else {
-        return Ok(());
+        return Ok(false);
     };
     let _ = app.emit(
         "update-available",
         json!({ "version": update.version, "notes": update.body.clone().unwrap_or_default() }),
     );
     *app.state::<AppState>().update.lock().unwrap() = Some(update);
-    Ok(())
+    Ok(true)
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<bool, String> {
+    // The updater is only set up in release builds with an update address.
+    if cfg!(debug_assertions) || !app.config().plugins.0.contains_key("updater") {
+        return Err("Updates are turned off in this build.".into());
+    }
+    check_for_update(&app).await
 }
 
 #[tauri::command]
@@ -1587,6 +1599,7 @@ fn main() {
             set_settings,
             export_library,
             import_library,
+            check_update,
             update_install,
             update_quit_and_install
         ])
@@ -1717,6 +1730,8 @@ mod tests {
             presence_activity(&named, 1000),
             json!({ "name": "My App", "buttons": [{ "label": "View Repository", "url": "https://github.com/me/app" }], "assets": { "large_image": "rust" } })
         );
+        let stream = Presence { activity_type: 3, details: "Watching".into(), ask_to_stream: true, ..Default::default() };
+        assert_eq!(presence_activity(&stream, 1000), json!({ "details": "Watching" }));
         let from = Presence { timer: "from".into(), timer_minutes: 90, timer_start: 1234, ..Default::default() };
         assert_eq!(presence_activity(&from, 6_000_000), json!({ "timestamps": { "start": 1234 } }));
         let locked = Presence { timer: "ago".into(), timer_minutes: 90, ..Default::default() };

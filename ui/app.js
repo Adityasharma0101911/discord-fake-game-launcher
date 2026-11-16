@@ -499,8 +499,8 @@ function bumpScore(side) {
 
 // The fields a stage or auto-play step doesn't set, kept from the form.
 function keptFields() {
-  const { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, button1Label, button1Url, button2Label, button2Url } = readPresence();
-  return { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, button1Label, button1Url, button2Label, button2Url };
+  const { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, askToStream, button1Label, button1Url, button2Label, button2Url } = readPresence();
+  return { appName, largeImage, largeText, smallImage, smallText, detailsUrl, stateUrl, askToJoin, askToStream, button1Label, button1Url, button2Label, button2Url };
 }
 
 async function toggleAutoplay(game) {
@@ -548,7 +548,8 @@ function readPresence() {
     partyMax: number('partyMax'),
     timerMinutes: number('timerMinutes'),
     askToJoin: data.askToJoin === 'on',
-    timerAlways: data.timerAlways === 'on'
+    timerAlways: data.timerAlways === 'on',
+    askToStream: data.askToStream === 'on'
   };
 }
 
@@ -1044,6 +1045,7 @@ async function openSettings() {
   form.elements.startWithWindows.checked = settings.startWithWindows;
   form.elements.winRate.value = load('winRate', '60');
   form.elements.autoSpeed.value = load('autoSpeed', '1');
+  $('updateStatus').textContent = `You have version ${settings.version}.`;
   if ((await dialogResult($('settingsDialog'))) !== 'confirm') return;
   save('winRate', form.elements.winRate.value);
   save('autoSpeed', form.elements.autoSpeed.value);
@@ -1052,6 +1054,16 @@ async function openSettings() {
     log('Saved the settings.', 'ok');
   } catch (e) {
     log(`Couldn’t save the settings: ${e}`, 'error');
+  }
+}
+
+async function checkUpdate() {
+  $('updateStatus').textContent = 'Checking…';
+  try {
+    // A found update opens the update dialog through the "update-available" event.
+    $('updateStatus').textContent = (await invoke('check_update')) ? 'An update is available.' : 'You have the latest version.';
+  } catch (e) {
+    $('updateStatus').textContent = `Couldn’t check for updates: ${e}`;
   }
 }
 
@@ -1145,6 +1157,7 @@ $('discoverBtn').onclick = () => setView('discover');
 $('importBtn').onclick = importFromPc;
 $('settingsBtn').onclick = openSettings;
 $('exportBtn').onclick = exportLibrary;
+$('checkUpdateBtn').onclick = checkUpdate;
 $('importFileBtn').onclick = () => $('importFile').click();
 $('importFile').onchange = (e) => {
   if (e.target.files[0]) importLibrary(e.target.files[0]);
