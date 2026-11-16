@@ -23,10 +23,11 @@ shows the game in your status, which also counts toward Discord Quests.
 - **Custom Discord status:** give any game extra lines like the mode, map and score (“Competing in VALORANT ·
   Competitive • Ascent · In Match • 12 - 3 (5 of 5)”), with party size and image links. There are examples for
   popular games with one-click stages (in lobby, in queue, agent select, in match), +1 score buttons, clickable
-  lines, an “Ask to Join” button and timers that restart, count down or are locked to start at a set time (e.g. always
-  27 hours in) or start from a set time and continue from where they were at each launch (optionally also counting while
+  lines, an “Ask to Join” button and timers that restart, count down or are locked to always show a set time (e.g. 27:39) or start from a set time and continue from where they were at each launch (optionally also counting while
   the game is stopped); a running game picks up changes within a
   few seconds.
+- **Preview and presets:** a card shows the status as Discord will, and each game keeps named presets to switch
+  between.
 - **Auto-play:** goes lobby → queue → agent select → match by itself, with the score changing round by round,
   then queues again with a different map and agent (editors rotate files and languages). It keeps going with the
   window closed and ends when the game stops.
@@ -36,7 +37,7 @@ shows the game in your status, which also counts toward Discord Quests.
   set an optional app name to make any app pose as your own.
 - **Settings (⚙):** show every running game at once (each is also sent as Rich Presence), start with Windows in
   the tray, auto-play win rate and speed, export and import of your library, a “Check for updates” button, and tips for play time and badges.
-- The tray menu launches your groups.
+- The tray menu launches your groups and restarts a game’s last auto-play session.
 - **Groups:** save sets of games and launch or stop them together.
 - **Multi-select:** pick several games to add at once, or launch, stop, group or remove several library games.
 - Favorites, auto-stop after 15–60 minutes, play time, desktop shortcuts and a warning when Discord isn’t running.

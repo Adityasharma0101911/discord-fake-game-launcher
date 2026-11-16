@@ -100,6 +100,13 @@
         <form id="presenceForm" class="presence" aria-labelledby="presenceTitle">
           <h2 id="presenceTitle">Discord status</h2>
           <p class="subtle small-text">Extra lines under the game on your Discord profile, like the mode, map and score. A running game updates within a few seconds.</p>
+          <div id="presencePreview" class="preview" aria-label="Preview of the status"></div>
+          <div class="stage-buttons">
+            <select id="presetSelect" class="input preset-select" aria-label="Saved statuses"></select>
+            <button type="button" id="presetSaveBtn" class="btn small">Save as preset</button>
+            <button type="button" id="presetDeleteBtn" class="btn small" disabled>Delete preset</button>
+            <button type="button" id="clockResetBtn" class="btn small" hidden>Restart the set-time clock</button>
+          </div>
           <div class="stages">
             <span class="subtle small-text">Quick switch (saves right away):</span>
             <div class="stage-buttons">
@@ -129,11 +136,11 @@
                 <option value="">Time since launch</option>
                 <option value="reset">Time since this status</option>
                 <option value="left">Time left</option>
-                <option value="ago">Locked: always starts at a set time</option>
+                <option value="ago">Locked: always shows the set time</option>
                 <option value="from">Start from a set time, continue each launch</option>
               </select>
             </label>
-            <label>Minutes (for “Time left”, “Locked” and “Start from”; 1,660 shows 27:40:00) <input name="timerMinutes" class="input" type="number" min="1" max="600000"></label>
+            <label>Time for “Time left”, “Locked” and “Start from”: hours:minutes like 27:39, or just minutes <input name="timerMinutes" class="input" inputmode="numeric" pattern="\d{1,6}(:\d{1,2}){0,2}" maxlength="12" placeholder="27:39"></label>
             <label>Top line <input name="details" class="input" minlength="2" maxlength="128"></label>
             <label>Second line <input name="state" class="input" minlength="2" maxlength="128"></label>
             <label>Top line link <input name="detailsUrl" class="input" type="url" pattern="https?://.+" maxlength="256" placeholder="https://… (optional, makes it clickable)"></label>

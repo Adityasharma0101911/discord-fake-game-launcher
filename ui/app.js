@@ -12,6 +12,7 @@ const state = {
   library: [], // [{ key, appId, name, exe, isFavorite, rpc, steam?, cover?, icon?, presence? }]
   groups: [], // [{ id, name, keys }]
   running: {}, // key -> { startedAt, stopAt } (ms since epoch)
+  assets: new Map(), // image name -> image id, for the game on screen
   autoplay: new Map(), // key -> the auto-played status shown now (null until the first step)
   view: parseView(load('view', '')), // { type: 'discover' | 'game' | 'group', id }
   autoStop: Number(load('autoStop', '0')),
@@ -243,11 +244,15 @@ function renderGame() {
     for (const input of form.elements) if (input.name && input.type !== 'url') input.placeholder = last[input.name] ?? '';
     // The app's own image names, offered as suggestions in the two image fields.
     $('assetNames').replaceChildren();
+    state.assets = new Map();
+    renderPresets(game);
     $('assetGrid').replaceChildren();
     $('assetPicker').hidden = true;
     imageField = 'largeImage';
     invoke('app_assets', { id: game.appId }).then((images) => {
       if (form.dataset.key !== game.key) return;
+      state.assets = new Map(images.map((a) => [a.name, a.id]));
+      renderPreview();
       $('assetNames').replaceChildren(...images.map((a) => Object.assign(el('option'), { value: a.name })));
       $('assetPicker').hidden = !images.length;
       $('assetGrid').replaceChildren(...images.map((a) => {
@@ -259,7 +264,10 @@ function renderGame() {
         img.alt = a.name;
         img.src = `https://cdn.discordapp.com/app-assets/${game.appId}/${a.id}.png?size=64`;
         button.append(img);
-        button.onclick = () => { form.elements[imageField].value = a.name; };
+        button.onclick = () => {
+          form.elements[imageField].value = a.name;
+          renderPreview();
+        };
         return button;
       }));
     }, () => {});
@@ -270,6 +278,8 @@ function renderGame() {
       return button;
     }));
   }
+  $('clockResetBtn').hidden = game.presence?.timer !== 'from';
+  renderPreview();
   const now = state.autoplay.get(game.key);
   $('autoplayBtn').textContent = now === undefined ? '▶ Auto-play a session' : '■ Stop auto-play';
   $('autoplayText').textContent = now === undefined
@@ -455,7 +465,7 @@ function matchLines(score, win = 0.6) {
 
 // Sessions back to back for about four hours; stopping the game ends it sooner. `keep` (images, links,
 // Ask to Join) is applied to every step.
-function sessionPlan(example, keep) {
+function sessionPlan(example, keep, clockKept = {}) {
   const { win, speed } = autoplaySettings();
   // This round's map, agent or file: [texts in the stages, texts to show instead] per `vary` group.
   let swaps = [];
@@ -468,7 +478,7 @@ function sessionPlan(example, keep) {
   let total = 0;
   const add = (presence, seconds, keepTimer = false) => {
     seconds = Math.max(5, Math.round(seconds * speed));
-    steps.push({ presence, seconds, keepTimer });
+    steps.push({ presence: { ...presence, ...clockKept }, seconds, keepTimer });
     total += seconds;
   };
   while (total < 4 * 3600) {
@@ -519,7 +529,7 @@ async function toggleAutoplay(game) {
   }
   state.autoplay.set(game.key, null);
   try {
-    await invoke('play_presence', { key: game.key, steps: sessionPlan(presenceExample(game), keptFields()) });
+    await invoke('play_presence', { key: game.key, steps: sessionPlan(presenceExample(game), keptFields(), clockFields()) });
     log(`Auto-playing ${game.name}: lobby, queue, then a match. Stop the game or auto-play to end it.`, 'ok');
   } catch (e) {
     state.autoplay.delete(game.key);
@@ -534,6 +544,7 @@ const presenceExample = (game) =>
 function fillPresence(presence = {}) {
   for (const input of $('presenceForm').elements) {
     if (input.type === 'checkbox') input.checked = Boolean(presence[input.name]);
+    else if (input.name === 'timerMinutes') input.value = presence.timerMinutes ? formatMinutes(presence.timerMinutes) : '';
     else if (input.name) input.value = presence[input.name] || (input.tagName === 'SELECT' ? input.options[0].value : '');
   }
 }
@@ -546,7 +557,7 @@ function readPresence() {
     activityType: number('activityType'),
     partySize: number('partySize'),
     partyMax: number('partyMax'),
-    timerMinutes: number('timerMinutes'),
+    timerMinutes: parseMinutes(data.timerMinutes),
     askToJoin: data.askToJoin === 'on',
     timerAlways: data.timerAlways === 'on',
     askToStream: data.askToStream === 'on'
@@ -554,18 +565,104 @@ function readPresence() {
 }
 
 function useStage(stage) {
-  fillPresence({ ...keptFields(), ...stage });
+  fillPresence({ ...keptFields(), ...stage, ...clockFields() });
   $('presenceForm').requestSubmit();
+}
+
+// "27:39" (or "27:39:10") is hours:minutes; a plain number is minutes.
+function parseMinutes(text = '') {
+  const parts = String(text).trim().split(':').map(Number);
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return 0;
+  return Math.floor(parts.length === 1 ? parts[0] : parts[0] * 60 + parts[1]);
+}
+const formatMinutes = (minutes) => `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`;
+
+// A locked or set-time clock is the user's own choice, so stage buttons and auto-play keep it.
+function clockFields() {
+  const { timer, timerMinutes, timerAlways } = readPresence();
+  return ['ago', 'from'].includes(timer) ? { timer, timerMinutes, timerAlways } : {};
+}
+
+// ---- Preview and presets ----
+
+const TYPE_LABEL = { 0: 'Playing', 2: 'Listening to', 3: 'Watching', 5: 'Competing in' };
+
+function previewImage(game, value) {
+  const src = /^https?:\/\//.test(value)
+    ? value
+    : state.assets.has(value) && `https://cdn.discordapp.com/app-assets/${game.appId}/${state.assets.get(value)}.png?size=128`;
+  return src ? Object.assign(el('img'), { src, alt: '' }) : null;
+}
+
+// What the timer line reads right now, for the form as filled in.
+function previewClock(game, p) {
+  const set = p.timerMinutes * 60000;
+  if (p.timer === 'left') return set ? `${clock(set)} left` : '';
+  if (p.timer === 'ago') return set ? `${clock(set)} (locked)` : '';
+  if (p.timer === 'reset') return 'restarts at 0:00 when saved';
+  if (p.timer === 'from') {
+    const saved = game.presence;
+    if (saved?.timer !== 'from' || !saved.timerStart || saved.timerMinutes !== p.timerMinutes) return set ? `${clock(set)} (starts when saved)` : '';
+    return clock((saved.timerPausedAt || Date.now()) - saved.timerStart) + (saved.timerPausedAt ? ' (paused until launch)' : '');
+  }
+  const run = state.running[game.key];
+  return run ? clock(Date.now() - run.startedAt) : '0:00 (starts at launch)';
+}
+
+// A card like the one on a Discord profile, from the form as it is now (saved or not).
+function renderPreview() {
+  const game = state.view.type === 'game' && gameByKey(state.view.id);
+  if (!game) return;
+  const p = readPresence();
+  const images = el('div', 'preview-art');
+  images.append(previewImage(game, p.largeImage) ?? art(game, 'thumb'));
+  const small = previewImage(game, p.smallImage);
+  if (small) {
+    small.className = 'preview-small';
+    images.append(small);
+  }
+  const lines = el('div', 'preview-lines');
+  const party = p.partyMax > 0 && p.partySize <= p.partyMax ? ` (${p.partySize} of ${p.partyMax})` : '';
+  const timer = el('span', 'subtle', previewClock(game, p));
+  timer.id = 'previewClock';
+  lines.append(
+    el('span', 'preview-kind', TYPE_LABEL[p.askToJoin || p.askToStream ? 0 : p.activityType] ?? 'Playing'),
+    el('strong', '', p.appName.trim() || game.name),
+    ...[p.details, p.state && p.state + party].filter(Boolean).map((text) => el('span', '', text)),
+    timer
+  );
+  const buttons = [p.askToJoin && 'Ask to Join', !p.askToJoin && p.button1Url && p.button1Label, !p.askToJoin && p.button2Url && p.button2Label].filter(Boolean);
+  if (buttons.length) {
+    const row = el('div', 'preview-buttons');
+    row.append(...buttons.map((text) => el('span', '', text)));
+    lines.append(row);
+  }
+  $('presencePreview').replaceChildren(images, lines);
+}
+
+function renderPresets(game) {
+  const presets = game.presets ?? [];
+  const option = (text, value) => Object.assign(el('option', '', text), { value });
+  $('presetSelect').replaceChildren(option(presets.length ? 'Saved statuses…' : 'No saved statuses yet', ''), ...presets.map((p) => option(p.name, p.name)));
+  $('presetDeleteBtn').disabled = true;
+}
+
+async function savePresets(game, presets) {
+  try {
+    const updated = await invoke('set_presets', { key: game.key, presets });
+    state.library = state.library.map((g) => (g.key === game.key ? updated : g));
+    renderPresets(updated);
+  } catch (e) {
+    log(`Couldn’t save the presets: ${e}`, 'error');
+  }
 }
 
 async function savePresence(game, presence) {
   try {
     const updated = await invoke('set_presence', { key: game.key, presence });
     state.library = state.library.map((g) => (g.key === game.key ? updated : g));
-    if (state.autoplay.delete(game.key)) {
-      log(`Stopped auto-play for ${game.name}.`);
-      render();
-    }
+    if (state.autoplay.delete(game.key)) log(`Stopped auto-play for ${game.name}.`);
+    render();
     if (!updated.presence) log(`Cleared the Discord status for ${game.name}.`);
     else log(`Saved the Discord status for ${game.name}; ${state.running[game.key] ? 'Discord shows it within a few seconds' : 'it shows when you launch the game'}.`, 'ok');
   } catch (e) {
@@ -606,6 +703,8 @@ function tick() {
     const run = state.running[node.dataset.timeFor];
     node.textContent = run ? runLabel(run) : '';
   }
+  const game = state.view.type === 'game' && gameByKey(state.view.id);
+  if (game && $('previewClock')) $('previewClock').textContent = previewClock(game, readPresence());
 }
 
 function setView(type, id = '') {
@@ -657,6 +756,7 @@ async function launch(game) {
     return;
   }
   state.running[game.key] = r.run;
+  if (game.presence?.timer === 'from') state.library = await invoke('get_library'); // its clock just resumed
   if (r.alreadyRunning) log(`${game.name} is already running.`);
   else log(`Launched ${game.name}${minutes ? `; it stops after ${minutes} min` : ''}.`, 'ok');
   render();
@@ -667,6 +767,10 @@ async function stop(game) {
   delete state.running[game.key];
   render();
   await invoke('stop_game', { key: game.key });
+  if (game.presence?.timer === 'from') {
+    state.library = await invoke('get_library'); // its clock just paused
+    render();
+  }
   log(`Stopped ${game.name}.`);
 }
 
@@ -1088,7 +1192,10 @@ async function importLibrary(file) {
 
 // ---- Updates ----
 
-listen('update-available', ({ payload }) => {
+listen('update-available', ({ payload }) => showUpdate(payload));
+
+function showUpdate(payload) {
+  if ($('updateDialog').open) return;
   $('updateVersion').textContent = `Version ${payload.version} is ready to install.`;
   $('updateNotes').textContent = payload.notes || 'No release notes.';
   $('updateProgressWrap').hidden = true;
@@ -1096,7 +1203,7 @@ listen('update-available', ({ payload }) => {
   $('updateLaterBtn').disabled = false;
   $('updateDialog').showModal();
   log(`Update ${payload.version} available.`, 'ok');
-});
+}
 
 listen('update-progress', ({ payload }) => {
   const mb = (bytes) => (bytes / 1048576).toFixed(1);
@@ -1193,6 +1300,36 @@ $('presenceForm').onsubmit = (e) => {
 $('scoreUsBtn').onclick = () => bumpScore(0);
 $('scoreThemBtn').onclick = () => bumpScore(1);
 $('autoplayBtn').onclick = () => toggleAutoplay(gameByKey(state.view.id));
+$('presenceForm').oninput = renderPreview;
+$('presetSelect').onchange = (e) => {
+  const preset = (gameByKey(state.view.id).presets ?? []).find((p) => p.name === e.target.value);
+  $('presetDeleteBtn').disabled = !preset;
+  if (!preset) return;
+  fillPresence(preset.presence);
+  $('presenceForm').requestSubmit();
+};
+$('presetSaveBtn').onclick = async () => {
+  const game = gameByKey(state.view.id);
+  const name = await askName('Name this status', $('presetSelect').value);
+  if (!name) return;
+  await savePresets(game, [...(game.presets ?? []).filter((p) => p.name !== name), { name, presence: readPresence() }]);
+  log(`Saved the preset “${name}” for ${game.name}.`, 'ok');
+};
+$('presetDeleteBtn').onclick = () => {
+  const game = gameByKey(state.view.id);
+  return savePresets(game, (game.presets ?? []).filter((p) => p.name !== $('presetSelect').value));
+};
+$('clockResetBtn').onclick = async () => {
+  const game = gameByKey(state.view.id);
+  try {
+    const updated = await invoke('reset_clock', { key: game.key });
+    state.library = state.library.map((g) => (g.key === game.key ? updated : g));
+    render();
+    log(`Restarted the clock for ${game.name}.`, 'ok');
+  } catch (e) {
+    log(`Couldn’t restart the clock: ${e}`, 'error');
+  }
+};
 $('presenceClearBtn').onclick = () => {
   fillPresence();
   savePresence(gameByKey(state.view.id), null);
@@ -1266,6 +1403,9 @@ async function syncCatalog() {
   catalogSync = syncCatalog();
   await refresh();
   checkDiscord();
+  // An update found while the window was closed.
+  invoke('pending_update').then((update) => update && showUpdate(update), () => {});
+  setInterval(() => invoke('check_update').catch(() => {}), 6 * 60 * 60 * 1000);
   // A fresh list can fill in cover art for games already in the library.
   if (await catalogSync) await refresh();
 })();

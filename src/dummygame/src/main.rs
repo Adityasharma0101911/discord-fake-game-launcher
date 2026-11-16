@@ -70,13 +70,17 @@ fn presence_path() -> Option<PathBuf> {
 }
 
 /// (app id, activity JSON object) from a presence file's text.
-fn parse_presence(text: &str) -> Option<(String, String)> {
-    let (id, activity) = text.split_once('\n')?;
-    let (id, activity) = (id.trim(), activity.trim());
-    (is_app_id(id) && activity.starts_with('{') && activity.ends_with('}')).then(|| (id.to_string(), activity.to_string()))
+/// App id, activity JSON and, from an optional third line "frozen <ms>", the time a locked clock always shows.
+type Custom = (String, String, Option<u128>);
+
+fn parse_presence(text: &str) -> Option<Custom> {
+    let mut lines = text.lines();
+    let (id, activity) = (lines.next()?.trim(), lines.next()?.trim());
+    let frozen = lines.next().and_then(|l| l.trim().strip_prefix("frozen ")?.parse().ok());
+    (is_app_id(id) && activity.starts_with('{') && activity.ends_with('}')).then(|| (id.to_string(), activity.to_string(), frozen))
 }
 
-fn read_presence(path: Option<&Path>) -> Option<(String, String)> {
+fn read_presence(path: Option<&Path>) -> Option<Custom> {
     parse_presence(&fs::read_to_string(path?).ok()?)
 }
 
@@ -180,13 +184,17 @@ fn rpc_session(fixed_id: Option<&str>, path: Option<&Path>, start_ms: u128) -> i
     pipe.write_all(&frame(0, &format!(r#"{{"v":1,"client_id":"{id}"}}"#)))?;
     while !next_frame(&mut pipe)?.contains(r#""evt":"READY""#) {}
     let pid = std::process::id();
-    let send = |pipe: &mut File, custom: &Option<(String, String)>| {
-        let activity = activity_json(custom.as_ref().map(|c| c.1.as_str()), start_ms);
+    let send = |pipe: &mut File, custom: &Option<Custom>| {
+        // A locked clock is sent again and again as "started <frozen> ago", so it never gets far past that time.
+        let start = custom.as_ref().and_then(|c| c.2).map_or(start_ms, |frozen| {
+            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()).saturating_sub(frozen)
+        });
+        let activity = activity_json(custom.as_ref().map(|c| c.1.as_str()), start);
         pipe.write_all(&frame(1, &format!(r#"{{"cmd":"SET_ACTIVITY","nonce":"1","args":{{"pid":{pid},"activity":{activity}}}}}"#)))
     };
     send(&mut pipe, &custom)?;
     // Polled rather than a blocking read: a pending read on this pipe handle would also hold up writes.
-    loop {
+    for tick in 1u64.. {
         std::thread::sleep(Duration::from_secs(2));
         while bytes_waiting(&pipe)? > 0 {
             read_frame(&mut pipe)?;
@@ -195,11 +203,14 @@ fn rpc_session(fixed_id: Option<&str>, path: Option<&Path>, start_ms: u128) -> i
         if fixed_id.is_none() && now.is_none() {
             return Ok(()); // closing the pipe clears the status, so Discord falls back to detecting the exe
         }
-        if now != custom {
+        // Every 6 s for a locked clock: Discord accepts at most 5 statuses per 20 s.
+        let resend = tick % 3 == 0 && now.as_ref().is_some_and(|c| c.2.is_some());
+        if now != custom || resend {
             custom = now;
             send(&mut pipe, &custom)?;
         }
     }
+    Ok(())
 }
 
 // Runs on its own thread forever; the process still exits when main returns (ExitProcess kills it).
@@ -366,7 +377,8 @@ mod tests {
     #[test]
     fn builds_presence() {
         let custom = r#"{"details":"Competitive","party":{"size":[2,5]}}"#;
-        assert_eq!(parse_presence(&format!("700136079562375258\n{custom}\n")), Some(("700136079562375258".into(), custom.into())));
+        assert_eq!(parse_presence(&format!("700136079562375258\n{custom}\n")), Some(("700136079562375258".into(), custom.into(), None)));
+        assert_eq!(parse_presence("123\n{}\nfrozen 5400000\n"), Some(("123".into(), "{}".into(), Some(5_400_000))));
         assert_eq!(parse_presence("abc\n{}"), None);
         assert_eq!(parse_presence("123\nnot json"), None);
         assert_eq!(parse_presence("123"), None);

@@ -303,6 +303,17 @@ button { cursor: pointer; }
 .presence-grid .check { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .party { display: flex; align-items: center; gap: 8px; }
 .party .input { width: 80px; }
+.preview { display: flex; align-items: center; gap: 14px; max-width: 420px; margin: 12px 0; padding: 12px; border-radius: 8px; background: var(--bg-card); }
+.preview-art { position: relative; flex: none; width: 64px; height: 64px; }
+.preview-art > :first-child { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; }
+.preview-art .preview-small { position: absolute; right: -5px; bottom: -5px; width: 24px; height: 24px; border-radius: 50%; border: 3px solid var(--bg-card); object-fit: cover; }
+.preview-lines { display: grid; gap: 1px; min-width: 0; font-size: 13px; }
+.preview-lines > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-lines strong { color: var(--text-strong); }
+.preview-kind { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+.preview-buttons { display: flex; gap: 6px; margin-top: 4px; }
+.preview-buttons span { padding: 2px 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); font-size: 12px; }
+.preset-select { width: auto; min-width: 180px; }
 .asset-picker { grid-column: 1 / -1; color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .asset-picker summary, .settings summary { cursor: pointer; }
 .asset-grid { display: flex; flex-wrap: wrap; gap: 6px; max-height: 190px; overflow-y: auto; margin-top: 8px; }

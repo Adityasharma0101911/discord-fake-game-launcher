@@ -272,6 +272,16 @@ struct MyGame {
     icon: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence: Option<Presence>,
+    /// Saved statuses to switch between.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    presets: Vec<Preset>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+struct Preset {
+    name: String,
+    presence: Presence,
 }
 
 /// A custom Discord status (Rich Presence) shown while the game runs, e.g. mode, map and score.
@@ -298,7 +308,7 @@ struct Presence {
     small_image: String,
     small_text: String,
     /// "" counts up from launch, "reset" counts up from when the status is saved, "left" counts down `timer_minutes`,
-    /// "ago" counts up starting at `timer_minutes` on every launch and save, "from" started at `timer_minutes` when it
+    /// "ago" is locked at `timer_minutes` (the fake exe keeps sending that time, see `frozen`), "from" started at `timer_minutes` when it
     /// was first saved and continues from where it was at each launch.
     timer: String,
     timer_minutes: u32,
@@ -323,7 +333,7 @@ struct Settings {
 }
 
 /// One status in an auto-play session, shown for `seconds`. `keep_timer` continues the previous step's timer.
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PlanStep {
     presence: Presence,
@@ -645,9 +655,7 @@ fn presence_activity(p: &Presence, now: u64) -> Value {
             match p.timer.as_str() {
                 "reset" => Some(json!({ "start": now })),
                 "left" if p.timer_minutes > 0 => Some(json!({ "end": now + u64::from(p.timer_minutes) * 60_000 })),
-                // Locked: every launch and save shows this much time already played, then counts on.
                 "from" if p.timer_start > 0 => Some(json!({ "start": p.timer_start })),
-                "ago" if p.timer_minutes > 0 => Some(json!({ "start": now.saturating_sub(u64::from(p.timer_minutes) * 60_000) })),
                 _ => None,
             },
         ),
@@ -673,7 +681,13 @@ fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), S
     match &game.presence {
         Some(p) => {
             fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
-            fs::write(&path, format!("{}\n{}\n", game.app_id, presence_activity(p, now))).map_err(err)
+            // A locked clock has no timestamps here: the fake exe makes them from the "frozen" line.
+            let frozen = if p.timer == "ago" && p.timer_minutes > 0 {
+                format!("frozen {}\n", u64::from(p.timer_minutes) * 60_000)
+            } else {
+                String::new()
+            };
+            fs::write(&path, format!("{}\n{}\n{frozen}", game.app_id, presence_activity(p, now))).map_err(err)
         }
         None => match fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
@@ -742,8 +756,17 @@ fn set_clock_running(app: &AppHandle, key: &str, running: bool) {
 
 /// Reports a fake game that exits on its own (closed, auto-stop, killed); stop_game reports its own.
 fn watch_exit(app: AppHandle, key: String, pid: u32) {
+    let mut ticks = 0u32;
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
+        ticks += 1;
+        // Every six hours of a running game, so an app left in the tray still finds updates.
+        if ticks.is_multiple_of(43_200) {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = check_update(handle).await;
+            });
+        }
         {
             let state = app.state::<AppState>();
             let mut running = state.running.lock().unwrap();
@@ -821,6 +844,14 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         let label = format!("Launch group: {}", group.name);
         menu.append(&MenuItem::with_id(app, format!("group:{}", group.id), label, true, None::<&str>)?)?;
     }
+    let plans: HashMap<String, Vec<PlanStep>> = read_json(app, "autoplay.json").unwrap_or_default();
+    for game in read_my_games(app).unwrap_or_default() {
+        let key = game_key(&game);
+        if plans.contains_key(&key) {
+            let label = format!("Auto-play: {}", game.name);
+            menu.append(&MenuItem::with_id(app, format!("auto:{key}"), label, true, None::<&str>)?)?;
+        }
+    }
     menu.append(&MenuItem::with_id(app, "stop-all", "Stop all games", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
     Ok(menu)
@@ -847,6 +878,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 app.exit(0);
             }
             id => {
+                if let Some(key) = id.strip_prefix("auto:") {
+                    let plans: HashMap<String, Vec<PlanStep>> = read_json(app, "autoplay.json").unwrap_or_default();
+                    launch(app, key, None);
+                    let _ = start_autoplay(app, key, plans.get(key).cloned().unwrap_or_default());
+                }
                 let group = id.strip_prefix("group:").and_then(|id| read_groups(app).into_iter().find(|g| g.id == id));
                 for key in group.iter().flat_map(|g| &g.keys) {
                     launch(app, key, None);
@@ -1226,7 +1262,22 @@ fn set_presence(app: AppHandle, state: State<'_, AppState>, key: String, presenc
 /// (the library keeps the saved status). No steps stops the session and puts the saved status back.
 /// The session ends when the game stops; it then emits "autoplay-ended".
 #[tauri::command]
-fn play_presence(app: AppHandle, state: State<'_, AppState>, key: String, steps: Vec<PlanStep>) -> Result<(), String> {
+fn play_presence(app: AppHandle, key: String, steps: Vec<PlanStep>) -> Result<(), String> {
+    start_autoplay(&app, &key, steps.clone())?;
+    if !steps.is_empty() {
+        // Kept so the tray menu can start this session again without the window.
+        // shortcut: the tray replays the last session made in the window; build plans in Rust for a fresh one each time.
+        let mut plans: HashMap<String, Vec<PlanStep>> = read_json(&app, "autoplay.json").unwrap_or_default();
+        plans.insert(key, steps);
+        write_json(&app, "autoplay.json", &plans)?;
+        refresh_tray(&app);
+    }
+    Ok(())
+}
+
+fn start_autoplay(app: &AppHandle, key: &str, steps: Vec<PlanStep>) -> Result<(), String> {
+    let (app, key) = (app.clone(), key.to_string());
+    let state = app.state::<AppState>();
     let game = find_game(&app, &key)?;
     let mut autoplay = state.autoplay.lock().unwrap();
     if let Some(stop) = autoplay.remove(&key) {
@@ -1243,9 +1294,11 @@ fn play_presence(app: AppHandle, state: State<'_, AppState>, key: String, steps:
     }
     let stop = Arc::new(AtomicBool::new(false));
     autoplay.insert(key.clone(), stop.clone());
+    let thread_app = app.clone();
     std::thread::spawn(move || {
+        let app = thread_app;
         let state = app.state::<AppState>();
-        let running = || !stop.load(Ordering::SeqCst) && state.running.lock().unwrap().contains_key(&key);
+        let running =|| !stop.load(Ordering::SeqCst) && state.running.lock().unwrap().contains_key(&key);
         let mut timer_from = now_ms();
         'steps: for step in steps {
             {
@@ -1257,7 +1310,13 @@ fn play_presence(app: AppHandle, state: State<'_, AppState>, key: String, steps:
                 if !step.keep_timer {
                     timer_from = now_ms();
                 }
-                let shown = MyGame { presence: Some(step.presence.clone()), ..game.clone() };
+                let mut presence = step.presence.clone();
+                if presence.timer == "from" {
+                    // The saved status owns this clock; a launch may have moved it.
+                    let saved = find_game(&app, &key).ok().and_then(|g| g.presence).filter(|p| p.timer == "from");
+                    presence.timer_start = saved.map_or(0, |p| p.timer_start);
+                }
+                let shown = MyGame { presence: Some(presence), ..game.clone() };
                 if write_presence_file(&app, &shown, timer_from).is_err() {
                     break;
                 }
@@ -1278,6 +1337,47 @@ fn play_presence(app: AppHandle, state: State<'_, AppState>, key: String, steps:
         }
     });
     Ok(())
+}
+
+/// Replaces a game's saved statuses.
+#[tauri::command]
+fn set_presets(app: AppHandle, key: String, presets: Vec<Preset>) -> Result<GameView, String> {
+    let mut games = read_my_games(&app)?;
+    let game = games.iter_mut().find(|g| game_key(g) == key).ok_or("Game not found in library.")?;
+    game.presets = presets.into_iter().filter(|p| !p.name.trim().is_empty()).take(30).collect();
+    let game = game.clone();
+    write_my_games(&app, &games)?;
+    Ok(with_db(&app, |db| view(game, Some(db))))
+}
+
+/// Puts a "start from a set time" clock back to its set time.
+#[tauri::command]
+fn reset_clock(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<GameView, String> {
+    let mut games = read_my_games(&app)?;
+    let game = games.iter_mut().find(|g| game_key(g) == key).ok_or("Game not found in library.")?;
+    let running = state.running.lock().unwrap().contains_key(&key);
+    let now = now_ms();
+    if let Some(p) = game.presence.as_mut().filter(|p| p.timer == "from") {
+        p.timer_start = now.saturating_sub(u64::from(p.timer_minutes) * 60_000);
+        p.timer_paused_at = if running || p.timer_always { 0 } else { now };
+    }
+    let game = game.clone();
+    {
+        // Not while an auto-play step owns the status file.
+        let autoplay = state.autoplay.lock().unwrap();
+        if !autoplay.contains_key(&key) {
+            write_presence_file(&app, &game, now)?;
+        }
+    }
+    write_my_games(&app, &games)?;
+    Ok(with_db(&app, |db| view(game, Some(db))))
+}
+
+/// The update found by a check made while the window was closed.
+#[tauri::command]
+fn pending_update(state: State<'_, AppState>) -> Option<Value> {
+    let update = state.update.lock().unwrap();
+    update.as_ref().map(|u| json!({ "version": u.version, "notes": u.body.clone().unwrap_or_default() }))
 }
 
 #[tauri::command]
@@ -1557,6 +1657,8 @@ fn main() {
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
                 let handle = app.handle().clone();
                 // A failed check (offline, no release yet, private repo) is not worth an error in the log.
+                // Later checks come from the window (every six hours) and, in the tray, from watch_exit.
+                // Not a loop here: a task that never ends keeps the app from saving its window position on exit.
                 tauri::async_runtime::spawn(async move {
                     let _ = check_for_update(&handle).await;
                 });
@@ -1600,6 +1702,9 @@ fn main() {
             export_library,
             import_library,
             check_update,
+            pending_update,
+            set_presets,
+            reset_clock,
             update_install,
             update_quit_and_install
         ])
@@ -1735,7 +1840,7 @@ mod tests {
         let from = Presence { timer: "from".into(), timer_minutes: 90, timer_start: 1234, ..Default::default() };
         assert_eq!(presence_activity(&from, 6_000_000), json!({ "timestamps": { "start": 1234 } }));
         let locked = Presence { timer: "ago".into(), timer_minutes: 90, ..Default::default() };
-        assert_eq!(presence_activity(&locked, 6_000_000), json!({ "timestamps": { "start": 600_000 } }));
+        assert_eq!(presence_activity(&locked, 6_000_000), json!({}), "the fake exe makes a locked clock's timestamps");
         // Discord refuses buttons together with Ask to Join.
         assert!(presence_activity(&Presence { ask_to_join: true, ..named }, 1000).get("buttons").is_none());
         let p = Presence {

@@ -236,6 +236,16 @@ try {
   await run(`setView('game', ${JSON.stringify(KEY)}); document.getElementById('presenceForm').elements.state.value = 'In Match • 12 - 3'; bumpScore(0); return 1`);
   await sleep(800);
   assert.equal((await run(call('get_library'))).find((g) => g.key === KEY).presence.state, 'In Match • 13 - 3');
+  // "27:39" is hours:minutes; a locked clock is left to the fake exe through a "frozen" line.
+  assert.deepEqual(await run(`return [parseMinutes('27:39'), parseMinutes('90'), parseMinutes('x'), formatMinutes(1659)]`), [1659, 90, 0, '27:39']);
+  await run(call('set_presence', { key: KEY, presence: { timer: 'ago', timerMinutes: 90, details: 'Locked' } }));
+  const lockedFile = fs.readFileSync(presenceFile, 'utf8').split('\n');
+  assert.ok(!('timestamps' in JSON.parse(lockedFile[1])) && lockedFile[2] === 'frozen 5400000', 'locked clock');
+  // Presets are kept with the game.
+  const withPreset = await run(call('set_presets', { key: KEY, presets: [{ name: 'Ranked', presence: { details: 'Ranked' } }, { name: ' ', presence: {} }] }));
+  assert.deepEqual(withPreset.presets.map((p) => p.name), ['Ranked']);
+  await run(call('set_presets', { key: KEY, presets: [] }));
+  assert.equal(await run(call('pending_update')), null);
   // "Start from a set time": the clock waits while the game is stopped and continues at launch.
   const fromClock = { timer: 'from', timerMinutes: 90, details: 'Clock test' };
   const clockStart = async () => (await run(call('get_library'))).find((g) => g.key === KEY).presence.timerStart;
