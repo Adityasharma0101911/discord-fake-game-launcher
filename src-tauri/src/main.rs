@@ -715,8 +715,8 @@ fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), S
                 String::new()
             };
             let mut activity = presence_activity(p, now);
-            if named && activity.get("name").is_none() {
-                activity["name"] = json!(game.name);
+            if named {
+                name_and_art(&mut activity, game);
             }
             fs::write(&path, format!("{}\n{activity}\n{frozen}", game.app_id)).map_err(err)
         }
@@ -724,6 +724,24 @@ fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), S
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
             _ => Ok(()),
         },
+    }
+}
+
+/// A Rich Presence entry's name and, when the status has no big image, its cover link: a game shown through
+/// another app (like the custom mobile games) would otherwise show that app's name and its missing icon.
+fn name_and_art(activity: &mut Value, game: &MyGame) {
+    if activity.get("name").is_none() {
+        activity["name"] = json!(game.name);
+    }
+    let cover = game.cover.as_deref().filter(|c| c.starts_with("https://") && c.len() <= 300);
+    if let (Some(cover), Some(map)) = (cover, activity.as_object_mut()) {
+        let assets = map.entry("assets").or_insert_with(|| json!({}));
+        if assets.get("large_image").is_none() {
+            assets["large_image"] = json!(cover);
+            if assets.get("large_text").is_none() && game.name.chars().count() >= 2 {
+                assets["large_text"] = json!(game.name);
+            }
+        }
     }
 }
 
@@ -1868,6 +1886,13 @@ mod tests {
         );
         let stream = Presence { activity_type: 3, details: "Watching".into(), ask_to_stream: true, ..Default::default() };
         assert_eq!(presence_activity(&stream, 1000), json!({ "details": "Watching" }));
+        let tiles = MyGame { name: "Piano Tiles 2".into(), cover: Some("https://x.test/a.png".into()), ..Default::default() };
+        let mut plain = json!({});
+        name_and_art(&mut plain, &tiles);
+        assert_eq!(plain, json!({ "name": "Piano Tiles 2", "assets": { "large_image": "https://x.test/a.png", "large_text": "Piano Tiles 2" } }));
+        let mut own = json!({ "name": "Mine", "assets": { "large_image": "https://x.test/b.png" } });
+        name_and_art(&mut own, &tiles);
+        assert_eq!(own, json!({ "name": "Mine", "assets": { "large_image": "https://x.test/b.png" } }), "the status's own name and image win");
         let from = Presence { timer: "from".into(), timer_minutes: 90, timer_start: 1234, ..Default::default() };
         assert_eq!(presence_activity(&from, 6_000_000), json!({ "timestamps": { "start": 1234 } }));
         let locked = Presence { timer: "ago".into(), timer_minutes: 90, ..Default::default() };
