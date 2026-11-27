@@ -98,7 +98,30 @@ const MOBILE: &[&str] = &[
     "Free Fire",
     "Mobile Legends: Bang Bang",
     "Raid: Shadow Legends",
+    "Piano Tiles 2",
 ];
+// A plain Rich Presence app with no name of its own on profiles, for games missing from Discord's list.
+const GENERIC_APP_ID: &str = "1054951789318909972";
+
+/// Mobile games missing from Discord's list. They are shown through the generic app under their own name
+/// (Rich Presence entries send their library name), with art from a full image link.
+fn custom_games() -> Vec<DbGame> {
+    let game = |name: &str, cover: &str| DbGame {
+        id: GENERIC_APP_ID.into(),
+        exe: fallback_exe_name(name),
+        name: name.into(),
+        rpc: true,
+        mobile: true,
+        cover: Some(cover.into()),
+        ..Default::default()
+    };
+    vec![game("Piano Tiles 2", "https://play-lh.googleusercontent.com/f7YcB5_a-gTjR3joD0qijksY2WYP7gcesj5vK3S2Wj5zGrF0H4xR7s_KHalQl9fS-dMJd1tF7dxd_Z1ZsDdh8pY=s512")]
+}
+
+fn with_custom(mut games: Vec<DbGame>) -> Vec<DbGame> {
+    games.extend(custom_games());
+    games
+}
 
 #[derive(Default)]
 struct AppState {
@@ -531,7 +554,7 @@ fn with_db<T>(app: &AppHandle, f: impl FnOnce(&Db) -> T) -> T {
             .and_then(|d| fs::metadata(d.join("games-index.json")).ok()?.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_millis() as u64);
-        Db::new(read_index(app).map(|i| i.games).unwrap_or_default(), modified)
+        Db::new(with_custom(read_index(app).map(|i| i.games).unwrap_or_default()), modified)
     }))
 }
 
@@ -678,7 +701,11 @@ fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), S
     let mut path = fake_exe_path(app, game)?.into_os_string();
     path.push(".presence");
     let path = PathBuf::from(path);
-    match &game.presence {
+    // Rich Presence entries always send their library name, so a game shown through another app (like the
+    // custom mobile games) isn't shown under that app's name.
+    let named = game.rpc && is_app_id(&game.app_id) && (1..=128).contains(&game.name.chars().count());
+    let shown = game.presence.clone().or_else(|| named.then(Presence::default));
+    match &shown {
         Some(p) => {
             fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
             // A locked clock has no timestamps here: the fake exe makes them from the "frozen" line.
@@ -687,7 +714,11 @@ fn write_presence_file(app: &AppHandle, game: &MyGame, now: u64) -> Result<(), S
             } else {
                 String::new()
             };
-            fs::write(&path, format!("{}\n{}\n{frozen}", game.app_id, presence_activity(p, now))).map_err(err)
+            let mut activity = presence_activity(p, now);
+            if named && activity.get("name").is_none() {
+                activity["name"] = json!(game.name);
+            }
+            fs::write(&path, format!("{}\n{activity}\n{frozen}", game.app_id)).map_err(err)
         }
         None => match fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(err(e)),
@@ -1010,7 +1041,7 @@ async fn sync_game_list(app: AppHandle, state: State<'_, AppState>) -> Result<Va
     // Keep only what the app uses (~2.5x smaller than Discord's raw list).
     let index = Index { version: INDEX_VERSION, etag, games: to_db_games(res.json().await.map_err(err)?) };
     fs::write(data_dir(&app)?.join("games-index.json"), serde_json::to_vec(&index).map_err(err)?).map_err(err)?;
-    *state.db.lock().unwrap() = Some(Db::new(index.games, now_ms()));
+    *state.db.lock().unwrap() = Some(Db::new(with_custom(index.games), now_ms()));
     Ok(json!({ "updated": true }))
 }
 

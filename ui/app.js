@@ -86,7 +86,9 @@ function artSources(game) {
   const id = encodeURIComponent(game.appId ?? game.id);
   const sources = [];
   if (game.steam) sources.push(`https://cdn.cloudflare.steamstatic.com/steam/apps/${encodeURIComponent(game.steam)}/header.jpg`);
-  if (game.cover) sources.push(`https://cdn.discordapp.com/app-icons/${id}/${encodeURIComponent(game.cover)}.png?size=256`);
+  // Custom entries (games missing from Discord's list) carry a full image link instead of a Discord image id.
+  if (game.cover?.startsWith('https://')) sources.push(game.cover);
+  else if (game.cover) sources.push(`https://cdn.discordapp.com/app-icons/${id}/${encodeURIComponent(game.cover)}.png?size=256`);
   if (game.icon) sources.push(`https://cdn.discordapp.com/app-icons/${id}/${encodeURIComponent(game.icon)}.png?size=128`);
   return sources;
 }
@@ -411,6 +413,14 @@ const PRESENCE_EXAMPLES = [
     ['Survival', { details: 'Survival • Day 4,096', state: 'Mining diamonds' }],
     ['Ender Dragon', { details: 'Hardcore • Day 4,096', state: 'Fighting the Ender Dragon', timer: 'reset' }]
   ], play: { pre: [['Main menu', 20, 60], ['Survival', 1200, 2400], ['Ender Dragon', 300, 900]] } },
+  { match: 'piano tiles', vary: [names('Little Star', 'Canon in D', 'Für Elise', 'Jingle Bells', 'Turkish March', 'Flight of the Bumblebee', 'Croatian Rhapsody')],
+    base: { largeImage: 'https://play-lh.googleusercontent.com/f7YcB5_a-gTjR3joD0qijksY2WYP7gcesj5vK3S2Wj5zGrF0H4xR7s_KHalQl9fS-dMJd1tF7dxd_Z1ZsDdh8pY=s512', largeText: 'Piano Tiles 2', smallText: 'Level 120' }, stages: [
+    ['Menu', { details: 'Choosing a song', state: 'In the menu' }],
+    ['Playing', { details: 'Playing Little Star', state: 'Score 1,024 • ★★★', timer: 'reset' }],
+    ['Crowns', { details: 'Playing Little Star', state: '👑👑👑 • Score 2,560' }],
+    ['Endless', { details: 'Endless • Little Star', state: 'Speed 9.8 tiles/s', timer: 'reset' }],
+    ['Arena', { activityType: 5, details: 'Arena • Little Star', state: 'Winning 3,120 - 2,980', timer: 'reset' }]
+  ], play: { pre: [['Menu', 15, 45], ['Playing', 60, 150], ['Crowns', 30, 90], ['Menu', 10, 30], ['Endless', 120, 300], ['Arena', 60, 120]] } },
   { match: 'rise of kingdoms', base: { details: 'Kingdom 1234 • Power 980M', smallText: 'Governor' }, stages: [
     ['In city', { state: 'Upgrading City Hall 25' }],
     ['Rallying', { state: 'Leading a rally on a Pass' }],

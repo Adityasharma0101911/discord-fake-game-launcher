@@ -135,6 +135,9 @@ try {
   const rok = (await run(call('search_games', { filter: 'rise of kingdoms', kind: 'mobile', limit: 5 }))).items[0];
   assert.ok(rok.name === 'Rise of Kingdoms' && rok.rpc && rok.mobile, 'mobile game shown through Rich Presence');
   assert.equal((await run(call('lookup_app', { id: rok.id }))).name, 'Rise of Kingdoms');
+  const tiles = (await run(call('search_games', { filter: 'piano tiles 2', kind: 'mobile', limit: 5 }))).items[0];
+  assert.ok(tiles.name === 'Piano Tiles 2' && tiles.rpc && tiles.mobile && tiles.cover.startsWith('https://'), 'custom mobile game');
+  assert.equal(await run(`return presenceExample(${JSON.stringify(tiles)}).match`), 'piano tiles');
   assert.match(await run(`try { await window.__TAURI__.core.invoke('lookup_app', { id: 'abc' }); return 'accepted'; } catch (e) { return String(e); }`), /long number/);
   console.log('search (typos, punctuation, mobile filter) / app lookup: ok');
 
